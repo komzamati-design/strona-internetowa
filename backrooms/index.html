@@ -23,6 +23,13 @@
        font-family:monospace;font-size:64px;letter-spacing:14px;text-shadow:0 0 24px #ffb545,0 0 60px #ff8a00;
        z-index:9;user-select:none;}
   #win small{font-size:17px;letter-spacing:3px;color:#e0cf7a;margin-top:18px;text-shadow:0 0 10px #000;}
+  #arrow{position:fixed;left:50%;top:56%;transform:translate(-50%,-50%);transform-origin:50% 50%;
+         z-index:7;display:none;pointer-events:none;opacity:0;transition:opacity .35s;}
+  #arrow i{display:block;width:0;height:0;margin:2px auto;
+           border-left:40px solid transparent;border-right:40px solid transparent;
+           border-bottom:52px solid #b9ff5e;filter:drop-shadow(0 0 12px #63b32a);}
+  #arrow i:nth-child(2){opacity:.75;transform:scale(.85);}
+  #arrow i:nth-child(3){opacity:.5;transform:scale(.7);}
   #flick{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:5;}
   #vig{position:fixed;inset:0;pointer-events:none;z-index:3;background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.45) 100%);}
   /* napisy jak na VHS */
@@ -48,6 +55,7 @@
 <div id="hud">WASD — chodzenie | Mysz — rozglądanie | SHIFT — bieg | R — nowy świat | ESC — pauza</div>
 <div id="stamWrap"><div id="stamFill"></div></div>
 <div id="hint">Kliknij, aby przejąć mysz</div>
+<div id="arrow"><i></i><i></i><i></i></div>
 <div id="pause"><div>PAUZA</div><small>kliknij albo ESC, żeby wrócić</small></div>
 <div id="win"><div>WYGRANA</div><small>dotarłeś na szczyt schodów — naciśnij R, aby zagrać ponownie</small></div>
 <script src="textures.js"></script>
@@ -133,6 +141,37 @@ function corridorV(a,b){
   for(let y=y0-1;y<=y1+1;y++){ carve(x,y); carve(x+1,y); }
 }
 
+// lista znanych schodów (do strzałek) — trzymamy tylko kilka najbliższych
+const stairsList = [];
+// stawia schody 3D w pokoju (jeśli się mieszczą i nie na graczu)
+function placeStairs(r){
+  if(!r.ex || r.w < NSTEPS+3 || r.h < 4) return false;
+  const sx0 = r.x + 1;
+  const sy0 = r.y + 1 + Math.floor(h2(r.cx,r.cy,67)*Math.max(1, r.h-4));
+  const cxT = sx0 + NSTEPS, cyT = sy0;
+  if(Math.hypot(cxT - playerPos.x, cyT - playerPos.y) < 4.0) return false;
+  // nie stawiaj drugi raz w tym samym miejscu
+  for(const s of stairsList){ if(Math.abs(s.x-cxT)<3 && Math.abs(s.y-cyT)<3) return true; }
+  for(let s=0;s<NSTEPS;s++){
+    const hh = hByte(STEP_H*(s+1));
+    for(let dz=0;dz<2;dz++){
+      const cx2 = sx0+s, cy2 = sy0+dz;
+      if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) continue;
+      map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hh; markDirty(cx2,cy2);
+    }
+  }
+  // platforma na szczycie
+  for(let dz=0;dz<2;dz++){
+    const cx2 = sx0+NSTEPS, cy2 = sy0+dz;
+    if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) continue;
+    map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hByte(TOP_H); markDirty(cx2,cy2);
+  }
+  // środek pierwszego stopnia (punkt orientacyjny dla strzałek)
+  stairsList.push({x: sx0+0.5, y: sy0+1.0});
+  if(stairsList.length > 24) stairsList.shift();
+  return true;
+}
+
 const madeSlots = new Set();
 function genSlot(i,j){
   const key = i*100000 + j;
@@ -150,25 +189,7 @@ function genSlot(i,j){
       if(dp > 2.0){ map[r.cy*MS+r.cx]=1; markDirty(r.cx,r.cy); }
     }
     // RZADKIE SCHODY (3D) — prowadzą do wygranej. ~4% pokoi.
-    if(h2(i,j,61) < 0.04 && r.w >= NSTEPS+2 && r.h >= 4){
-      const sx0 = r.x + 1;
-      const sy0 = r.y + 1 + Math.floor(h2(i,j,67)*Math.max(1, r.h-4));
-      const dpS = Math.hypot(sx0+2 - playerPos.x, sy0 - playerPos.y);
-      if(dpS > 4.0){
-        for(let s=0;s<NSTEPS;s++){
-          const hh = hByte(STEP_H*(s+1));
-          for(let dz=0;dz<2;dz++){
-            const cx2 = sx0+s, cy2 = sy0+dz;
-            map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hh; markDirty(cx2,cy2);
-          }
-        }
-        // szczyt: jasna platforma
-        for(let dz=0;dz<2;dz++){
-          const cx2 = sx0+NSTEPS, cy2 = sy0+dz;
-          map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hByte(TOP_H); markDirty(cx2,cy2);
-        }
-      }
-    }
+    if(h2(i,j,61) < 0.04) placeStairs(r);
   }
   if(r.ex){
     corridorH(r, roomOf(i+1,j));
@@ -188,6 +209,20 @@ function ensureWorld(px,py){
   lastSlotKey = key;
   const R = VIEW_AHEAD;
   for(let j=cj-R;j<=cj+R;j++) for(let i=ci-R;i<=ci+R;i++) genSlot(i,j);
+  // Gwarancja: jeśli w pobliżu nie ma żadnych schodów, postaw jedne w okolicy
+  let near = false;
+  for(const s of stairsList){ if(Math.hypot(s.x-px, s.y-py) < 70){ near = true; break; } }
+  if(!near){
+    let placed = false;
+    for(let rr=2; rr<=8 && !placed; rr++){
+      for(let j=cj-rr;j<=cj+rr && !placed;j++){
+        for(let i=ci-rr;i<=ci+rr && !placed;i++){
+          if(Math.max(Math.abs(i-ci),Math.abs(j-cj)) !== rr) continue;
+          if(placeStairs(roomOf(i,j))) placed = true;
+        }
+      }
+    }
+  }
   return true;
 }
 
@@ -701,6 +736,7 @@ function reseedWorld(){
   SEED = (Math.random()*0x7fffffff)|0;
   map.fill(1);
   heights.fill(0);
+  stairsList.length = 0;
   madeSlots.clear();
   lastSlotKey = '';
   won = false; winEl.style.display='none';
@@ -857,6 +893,7 @@ function movePlayer(dx,dy){
 let stamina = 1.0;
 let won = false;
 const winEl = document.getElementById('win');
+const arrowEl = document.getElementById('arrow');
 let exhausted = false;
 const STAM_DRAIN = 0.30;     // /sek podczas biegu
 const STAM_REGEN = 0.20;     // /sek regeneracji
@@ -955,6 +992,31 @@ function loop(now){
   gl.drawArrays(gl.TRIANGLES,0,3);
 
   // (flicker usunięty — światła nie migają)
+
+  // ===== STRZAŁKI DO SCHODÓW (pojawiają się co jakiś czas) =====
+  {
+    let nearS = null, nd2 = 1e18;
+    for(const s of stairsList){
+      const d2 = (s.x-pX)*(s.x-pX) + (s.y-pY)*(s.y-pY);
+      if(d2 < nd2){ nd2 = d2; nearS = s; }
+    }
+    const phase = (now/1000) % 16;              // cykl 16 s
+    const show = nearS && nd2 < 95*95 && phase < 4.5;
+    if(show){
+      const dx = nearS.x-pX, dz = nearS.y-pY;
+      const ux = dx/(Math.hypot(dx,dz)||1), uz = dz/(Math.hypot(dx,dz)||1);
+      // osie ekranu: prawo = (-sin, cos), przód = (cos, sin)
+      const sxr = ux*(-Math.sin(ang)) + uz*(Math.cos(ang));
+      const syd = -(ux*Math.cos(ang) + uz*Math.sin(ang));
+      const deg = Math.atan2(syd, sxr)*180/Math.PI + 90;
+      arrowEl.style.display='block';
+      arrowEl.style.transform = 'translate(-50%,-50%) rotate('+deg.toFixed(1)+'deg)';
+      arrowEl.style.opacity = (phase < 0.4 ? phase/0.4 : (phase > 4.1 ? (4.5-phase)/0.4 : 1)).toFixed(2);
+    } else {
+      arrowEl.style.opacity = 0;
+      if(arrowEl.style.display!=='none' && !arrowEl.style.opacity) arrowEl.style.display='none';
+    }
+  }
 
   requestAnimationFrame(loop);
 }
