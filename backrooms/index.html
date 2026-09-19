@@ -91,6 +91,9 @@ function roomOf(i,j){
   return { ex, x:i*SLOT+ox, y:j*SLOT+oy, w, h, cx:i*SLOT+ox+(w>>1), cy:j*SLOT+oy+(h>>1) };
 }
 
+// pozycja gracza — potrzebna generatorowi, żeby nie stawiał ścian na graczu
+const playerPos = {x: MS/2, y: MS/2};
+
 // prostokąt "brudny" do podmiany fragmentu tekstury
 let dirty = null;
 function markDirty(x,y){
@@ -129,8 +132,11 @@ function genSlot(i,j){
     // otwory w ścianach pokoju (dodatkowe przejścia)
     if(h2(i,j,31) < 0.55){ const oy = r.y + 1 + Math.floor(h2(i,j,37)*Math.max(1,r.h-2)); carve(r.x+r.w, oy); carve(r.x+r.w, oy+1); }
     if(h2(i,j,41) < 0.55){ const ox = r.x + 1 + Math.floor(h2(i,j,43)*Math.max(1,r.w-2)); carve(ox, r.y+r.h); carve(ox+1, r.y+r.h); }
-    // filar w dużym pokoju
-    if(r.w>=6 && r.h>=6 && h2(i,j,47) < 0.5){ map[r.cy*MS+r.cx]=1; markDirty(r.cx,r.cy); }
+    // filar w dużym pokoju (nigdy tam, gdzie stoi gracz)
+    if(r.w>=6 && r.h>=6 && h2(i,j,47) < 0.5){
+      const dp = Math.hypot(r.cx - playerPos.x, r.cy - playerPos.y);
+      if(dp > 2.0){ map[r.cy*MS+r.cx]=1; markDirty(r.cx,r.cy); }
+    }
   }
   if(r.ex){
     corridorH(r, roomOf(i+1,j));
@@ -709,7 +715,8 @@ function canStand(x,y){
 function movePlayer(dx,dy){
   const dist = Math.hypot(dx,dy);
   if(dist < 1e-6) return;
-  const steps = Math.max(1, Math.ceil(dist/0.12));   // dzielimy ruch na małe kroki
+  const ox = pX, oy = pY;
+  const steps = Math.max(1, Math.ceil(dist/0.10));   // dzielimy ruch na małe kroki
   const sx = dx/steps, sy = dy/steps;
   for(let i=0;i<steps;i++){
     if(canStand(pX+sx, pY+sy)){ pX+=sx; pY+=sy; }
@@ -717,6 +724,10 @@ function movePlayer(dx,dy){
     else if(canStand(pX, pY+sy)){ pY+=sy; }
     else break;
   }
+  // zabezpieczenie: nigdy nie kończymy wewnątrz ściany
+  if(!canStand(pX,pY)){ pX = ox; pY = oy; }
+  pX = Math.min(MS-2, Math.max(1, pX));
+  pY = Math.min(MS-2, Math.max(1, pY));
 }
 
 // ===== STAMINA =====
@@ -769,16 +780,18 @@ function loop(now){
     const l=Math.hypot(vx,vy);
     movePlayer(vx/l*speed, vy/l*speed);
   }
-  // gdyby gracz znalazł się w ścianie — wypchnij go na wolne pole
+  // gdyby gracz znalazł się w ścianie — wysuń go BARDZO krótkimi krokami (bez przechodzenia przez ściany)
   if(!canStand(pX,pY)){
-    outer:
-    for(let rr=0.1; rr<=1.2; rr+=0.1){
-      for(let a=0;a<8;a++){
-        const ax=Math.cos(a*0.785398)*rr, ay=Math.sin(a*0.785398)*rr;
-        if(canStand(pX+ax,pY+ay)){ pX+=ax; pY+=ay; break outer; }
+    let fixed = false;
+    for(let rr=0.05; rr<=0.60 && !fixed; rr+=0.05){
+      for(let a=0;a<16;a++){
+        const ax=Math.cos(a*0.392699)*rr, ay=Math.sin(a*0.392699)*rr;
+        if(canStand(pX+ax,pY+ay)){ pX+=ax; pY+=ay; fixed=true; break; }
       }
     }
+    if(!fixed){ pX = spawn.x; pY = spawn.y; }   // ostateczność: wróć na start
   }
+  playerPos.x = pX; playerPos.y = pY;
   // pasek staminy
   stamFill.style.width = (stamina*100).toFixed(1)+'%';
   stamWrap.classList.toggle('empty', exhausted);
