@@ -18,6 +18,11 @@
             box-shadow:0 0 10px rgba(0,0,0,.6);overflow:hidden;}
   #stamFill{height:100%;width:100%;background:linear-gradient(90deg,#8fbf4a,#d8cf6a);transition:background .2s;}
   #stamWrap.empty #stamFill{background:linear-gradient(90deg,#8a3020,#c04a2a);}
+  #win{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+       background:radial-gradient(circle at center, rgba(60,50,0,.55), rgba(0,0,0,.85));color:#ffe98a;
+       font-family:monospace;font-size:64px;letter-spacing:14px;text-shadow:0 0 24px #ffb545,0 0 60px #ff8a00;
+       z-index:9;user-select:none;}
+  #win small{font-size:17px;letter-spacing:3px;color:#e0cf7a;margin-top:18px;text-shadow:0 0 10px #000;}
   #flick{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:5;}
   #vig{position:fixed;inset:0;pointer-events:none;z-index:3;background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.45) 100%);}
   /* napisy jak na VHS */
@@ -44,6 +49,7 @@
 <div id="stamWrap"><div id="stamFill"></div></div>
 <div id="hint">Kliknij, aby przejąć mysz</div>
 <div id="pause"><div>PAUZA</div><small>kliknij albo ESC, żeby wrócić</small></div>
+<div id="win"><div>WYGRANA</div><small>dotarłeś na szczyt schodów — naciśnij R, aby zagrać ponownie</small></div>
 <script src="textures.js"></script>
 <script>
 const cv = document.getElementById('c');
@@ -69,7 +75,13 @@ setInterval(()=>{
 // ===== ŚWIAT: NIESKOŃCZONA GENERACJA (1=ściana, 0=pusto) =====
 const MS = 2048;                      // bufor świata (komórek) wokół gracza
 const SLOT = 9;                       // siatka "slotów" pokoi
+const HMAX = 0.80;                    // maksymalna wysokość bloku (jak w shaderze)
+const STEP_H = 0.13;                  // wysokość jednego stopnia
+const NSTEPS = 5;                     // liczba stopni (razem 0.65)
+const TOP_H  = STEP_H*NSTEPS;         // wysokość szczytu schodów = wygrana
+const hByte  = h => Math.max(0, Math.min(255, Math.round(h/HMAX*255)));
 let map = new Uint8Array(MS*MS).fill(1);
+let heights = new Uint8Array(MS*MS);  // 0 = brak bloku, >0 = wysokość (bajt)
 const at = (x,y)=> (x<0||y<0||x>=MS||y>=MS) ? 1 : map[y*MS+x];
 
 // LOSOWY SEED — za każdą grą inny układ (a w obrębie gry spójny)
@@ -137,6 +149,26 @@ function genSlot(i,j){
       const dp = Math.hypot(r.cx - playerPos.x, r.cy - playerPos.y);
       if(dp > 2.0){ map[r.cy*MS+r.cx]=1; markDirty(r.cx,r.cy); }
     }
+    // RZADKIE SCHODY (3D) — prowadzą do wygranej. ~4% pokoi.
+    if(h2(i,j,61) < 0.04 && r.w >= NSTEPS+2 && r.h >= 4){
+      const sx0 = r.x + 1;
+      const sy0 = r.y + 1 + Math.floor(h2(i,j,67)*Math.max(1, r.h-4));
+      const dpS = Math.hypot(sx0+2 - playerPos.x, sy0 - playerPos.y);
+      if(dpS > 4.0){
+        for(let s=0;s<NSTEPS;s++){
+          const hh = hByte(STEP_H*(s+1));
+          for(let dz=0;dz<2;dz++){
+            const cx2 = sx0+s, cy2 = sy0+dz;
+            map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hh; markDirty(cx2,cy2);
+          }
+        }
+        // szczyt: jasna platforma
+        for(let dz=0;dz<2;dz++){
+          const cx2 = sx0+NSTEPS, cy2 = sy0+dz;
+          map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hByte(TOP_H); markDirty(cx2,cy2);
+        }
+      }
+    }
   }
   if(r.ex){
     corridorH(r, roomOf(i+1,j));
@@ -173,7 +205,13 @@ let spawn = {x:MS/2+0.5, y:MS/2+0.5};
   }
   if(best) spawn = best;
 }
-const solid = (x,y)=> at(x|0,y|0)===1;
+// "solid" = pełna ściana (blok o wysokości można pokonać wchodząc po stopniach)
+const solid = (x,y)=>{
+  const cx = x|0, cy = y|0;
+  if(cx<0||cy<0||cx>=MS||cy>=MS) return true;
+  const i = cy*MS+cx;
+  return map[i]===1 && heights[i]===0;
+};
 
 // ===== GL =====
 const RSCALE = 0.7;   // scena renderowana w 70% rozdzielczości (dużo szybciej, VHS i tak rozmywa)
@@ -197,6 +235,7 @@ uniform float uTime, uPitch, uEye;
 const float TANH = 0.57735;   // FOV 60°
 const float WC = 1.35;        // wysokość sufitu
 const float MS = 2048.0;      // rozmiar bufora świata (musi się zgadzać z JS)
+const float HMAX = 0.80;      // maksymalna wysokość bloku (schodów)
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float vnoise(vec2 p){
@@ -389,19 +428,44 @@ void main(){
   float tdx = abs(idx.x), tdz = abs(idx.y);
   float sdx = (rd.x<0.? (uPos.x-float(mx)) : (float(mx)+1.-uPos.x))*(rd.x==0.?1e9:abs(1.0/rd.x));
   float sdz = (rd.z<0.? (uPos.y-float(mz)) : (float(mz)+1.-uPos.y))*(rd.z==0.?1e9:abs(1.0/rd.z));
-  float tW=1e9; int side=0;
-  for(int i=0;i<96;i++){
-    if(sdx<sdz){ sdx+=tdx; mx+=sx; side=0; } else { sdz+=tdz; mz+=sz; side=1; }
-    if(texelFetch(uMap, ivec2(mx,mz),0).r>0.5){ tW = side==0? sdx-tdx : sdz-tdz; break; }
+
+  // --- DDA z obsługą BLOKÓW o zmiennej wysokości (schody) ---
+  //  .r = ściana/blok,  .g = wysokość bloku
+  float tW=1e9; int side=0; int hitK=0;  // 0=brak 1=pełna ściana 2=bok bloku 3=góra bloku
+  float blockH = 0.0;                     // wysokość trafionego bloku
+  float tTopHit = 1e9;                    // odległość do górnej płaszczyzny bloku
+  for(int i=0;i<128;i++){
+    float tEntry;
+    if(sdx<sdz){ tEntry = sdx; sdx+=tdx; mx+=sx; side=0; }
+    else       { tEntry = sdz; sdz+=tdz; mz+=sz; side=1; }
+    vec4 cell = texelFetch(uMap, ivec2(mx,mz),0);
+    if(cell.r > 0.5){
+      float h = cell.g/255.0 * HMAX;
+      if(h < 0.02){ tW = tEntry; hitK = 1; break; }        // pełna ściana
+      float yE = uEye + rd.y*tEntry;
+      if(yE < h){ tW = tEntry; hitK = 2; blockH = h; break; } // bok bloku
+      // promień leci nad blokiem — sprawdź górną płaszczyznę w tej komórce
+      if(rd.y < -1e-4){
+        float tTop = (h - uEye)/rd.y;
+        if(tTop > tEntry){
+          vec3 Q = vec3(uPos.x,0.,uPos.y) + rd*tTop;
+          if(int(floor(Q.x))==mx && int(floor(Q.z))==mz){
+            tTopHit = tTop; hitK = 3; blockH = h; break;
+          }
+        }
+      }
+      // inaczej: przelatuje nad blokiem → lecimy dalej
+    }
   }
-  // płaszczyzny pionowe
+  // płaszczyzny poziome
   float tF = rd.y<-1e-4 ? uEye/-rd.y : 1e9;
   float tC = rd.y> 1e-4 ? (WC-uEye)/rd.y : 1e9;
 
-  float t; vec3 P; int kind; // 0=floor 1=ceil 2=wall
-  if(tF<tW && tF<=tC){ t=tF; kind=0; }
+  float t; vec3 P; int kind; // 0=floor 1=ceil 2=wall 3=top bloku 4=bok bloku
+  if(hitK==3 && tTopHit < tF && tTopHit < tC){ t=tTopHit; kind=3; }
+  else if(tF<tW && tF<=tC){ t=tF; kind=0; }
   else if(tC<tW){ t=tC; kind=1; }
-  else { t=tW; kind=2; }
+  else { t=tW; kind = (hitK==2) ? 4 : 2; }
   t = max(t, 0.02);
   P = vec3(uPos.x,0.,uPos.y) + rd*t;
 
@@ -422,6 +486,37 @@ void main(){
       return;
     }
     N = vec3(0.,-1.,0.);
+  }
+  else if(kind==3){
+    // GÓRNA PŁASZCZYZNA BLOKU (stopień schodów)
+    vec3 base;
+    if(uHasTex==1){
+      base = texture(uFloorTex, P.xz*uFloorRep).rgb;
+    } else {
+      base = floorTex(P.xz, t);
+    }
+    // stopnie: przyciemnienie krawędzi dla czytelności + lekki relief
+    vec2 fr = abs(fract(P.xz)-0.5);
+    float edge = smoothstep(0.42,0.5, max(fr.x,fr.y));
+    albedo = base * (0.86 + 0.14*(1.0-edge));
+    N = vec3(0.,1.,0.);
+  }
+  else if(kind==4){
+    // BOK BLOKU (pionowa ścianka stopnia) — od podłogi do wysokości bloku
+    float w = side==0 ? P.z : P.x;
+    float y = clamp(P.y/max(blockH,0.05), 0., 1.);
+    vec2 wuv = vec2(w, y) * uWallRep;
+    vec3 Tw = side==0 ? vec3(0,0,1) : vec3(1,0,0);
+    N = side==0 ? vec3(rd.x>0.?-1.:1.,0,0) : vec3(0,0,rd.z>0.?-1.:1.);
+    if(uHasTex==1){
+      vec3 wt = texture(uWallTex, wuv).rgb;
+      float lw = dot(wt, vec3(0.299,0.587,0.114));
+      wt = mix(wt, vec3(lw), 0.40);
+      wt = mix(wt, vec3(0.74,0.70,0.34), 0.30);
+      albedo = wt * 0.9 * mix(1.0, 0.93, float(side));
+    } else {
+      albedo = wallTex(vec2(w,y), side==1?1.:0.) * 0.9;
+    }
   }
   else {
     float w = side==0 ? P.z : P.x;
@@ -447,7 +542,8 @@ void main(){
       N = wallNormal(vec2(w,y), N, Tw, vec3(0,1,0));
     }
   }
-  vec3 col = albedo * lit(P, N, rd, kind);
+  int mat = (kind==1) ? 1 : ((kind==0 || kind==3) ? 0 : 2);
+  vec3 col = albedo * lit(P, N, rd, mat);
   // delikatne przygaszanie z odległością (bez mgły)
   col *= clamp(1.60 - t*0.032, 0.55, 1.60);
   // tone map
@@ -564,10 +660,10 @@ gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
 const mapTex = gl.createTexture();
 gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, mapTex);
 {
-  const d = new Uint8Array(MS*MS);
-  for(let i=0;i<MS*MS;i++){ d[i]= map[i]?255:0; }
+  const d = new Uint8Array(MS*MS*2);
+  for(let i=0;i<MS*MS;i++){ d[i*2] = map[i]?255:0; d[i*2+1] = heights[i]; }
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,MS,MS,0,gl.RED,gl.UNSIGNED_BYTE,d);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RG8,MS,MS,0,gl.RG,gl.UNSIGNED_BYTE,d);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
@@ -582,15 +678,19 @@ function uploadWorldDirty(){
   const x1 = Math.min(MS-1,dirty.x1), y1 = Math.min(MS-1,dirty.y1);
   const w = x1-x0+1, h = y1-y0+1;
   if(w>0 && h>0){
-    const buf = new Uint8Array(w*h);
+    const buf = new Uint8Array(w*h*2);
     for(let y=0;y<h;y++){
       const row = (y0+y)*MS;
-      for(let x=0;x<w;x++) buf[y*w+x] = map[row+x0+x] ? 255 : 0;
+      for(let x=0;x<w;x++){
+        const i = row+x0+x;
+        buf[(y*w+x)*2]   = map[i] ? 255 : 0;
+        buf[(y*w+x)*2+1] = heights[i];
+      }
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, mapTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage2D(gl.TEXTURE_2D,0,x0,y0,w,h,gl.RED,gl.UNSIGNED_BYTE,buf);
+    gl.texSubImage2D(gl.TEXTURE_2D,0,x0,y0,w,h,gl.RG,gl.UNSIGNED_BYTE,buf);
   }
   dirty = null;
 }
@@ -600,8 +700,10 @@ uploadWorldDirty();
 function reseedWorld(){
   SEED = (Math.random()*0x7fffffff)|0;
   map.fill(1);
+  heights.fill(0);
   madeSlots.clear();
   lastSlotKey = '';
+  won = false; winEl.style.display='none';
   const ci = Math.floor(pX/SLOT), cj = Math.floor(pY/SLOT);
   for(let j=cj-VIEW_AHEAD;j<=cj+VIEW_AHEAD;j++) for(let i=ci-VIEW_AHEAD;i<=ci+VIEW_AHEAD;i++) genSlot(i,j);
   let best=null, bd=1e9;
@@ -710,9 +812,27 @@ addEventListener('mousemove',e=>{ if(document.pointerLockElement===cv){ ang += e
 
 // ===== KOLIZJE (AABB gracza + małe kroki = brak przenikania przez ściany) =====
 const PR = 0.27;                                  // promień gracza
+const MAXSTEP = 0.19;                             // maks. różnica wysokości, na jaką wejdziemy
 function canStand(x,y){
   return !solid(x-PR,y-PR) && !solid(x+PR,y-PR) &&
          !solid(x-PR,y+PR) && !solid(x+PR,y+PR);
+}
+// wysokość podłogi (bloków) pod danym punktem — najwyższy z próbkowanych
+function groundAt(x,y){
+  let g = 0;
+  const P = PR*0.92;
+  const pts = [[0,0],[-P,-P],[P,-P],[-P,P],[P,P]];
+  for(const p of pts){
+    const cx = Math.floor(x+p[0]), cy = Math.floor(y+p[1]);
+    if(cx<0||cy<0||cx>=MS||cy>=MS) continue;
+    const hv = heights[cy*MS+cx];
+    if(hv>0){ const hh = hv/255*HMAX; if(hh>g) g = hh; }
+  }
+  return g;
+}
+function canGo(x,y,curG){
+  if(!canStand(x,y)) return false;
+  return groundAt(x,y) <= curG + MAXSTEP;
 }
 function movePlayer(dx,dy){
   const dist = Math.hypot(dx,dy);
@@ -721,9 +841,10 @@ function movePlayer(dx,dy){
   const steps = Math.max(1, Math.ceil(dist/0.10));   // dzielimy ruch na małe kroki
   const sx = dx/steps, sy = dy/steps;
   for(let i=0;i<steps;i++){
-    if(canStand(pX+sx, pY+sy)){ pX+=sx; pY+=sy; }
-    else if(canStand(pX+sx, pY)){ pX+=sx; }          // ślizganie po ścianie
-    else if(canStand(pX, pY+sy)){ pY+=sy; }
+    const g = groundAt(pX,pY);
+    if(canGo(pX+sx, pY+sy, g)){ pX+=sx; pY+=sy; }
+    else if(canGo(pX+sx, pY, g)){ pX+=sx; }          // ślizganie po ścianie
+    else if(canGo(pX, pY+sy, g)){ pY+=sy; }
     else break;
   }
   // zabezpieczenie: nigdy nie kończymy wewnątrz ściany
@@ -734,6 +855,8 @@ function movePlayer(dx,dy){
 
 // ===== STAMINA =====
 let stamina = 1.0;
+let won = false;
+const winEl = document.getElementById('win');
 let exhausted = false;
 const STAM_DRAIN = 0.30;     // /sek podczas biegu
 const STAM_REGEN = 0.20;     // /sek regeneracji
@@ -798,7 +921,13 @@ function loop(now){
   stamFill.style.width = (stamina*100).toFixed(1)+'%';
   stamWrap.classList.toggle('empty', exhausted);
 
-  const eye = EYE + Math.sin(bobT)*0.012*(moving?1:0);
+  const eye = EYE + groundAt(pX,pY) + Math.sin(bobT)*0.012*(moving?1:0);
+  // ===== WYGRANA: wejście na szczyt schodów =====
+  {
+    const g = groundAt(pX,pY);
+    if(!won && g >= TOP_H - 0.02){ won = true; winEl.style.display='flex'; }
+    else if(won && g < TOP_H - 0.10){ won = false; winEl.style.display='none'; }
+  }
   const tNow = paused ? frozenT : now/1000;
   // --- świat: generowanie kolejnych fragmentów wokół gracza ---
   if(!paused && ensureWorld(pX,pY)) uploadWorldDirty();
