@@ -675,8 +675,26 @@ document.addEventListener('keydown',()=>{ if(!paused && document.pointerLockElem
 addEventListener('pointerlockchange',()=>{ if(document.pointerLockElement!==cv && !paused) setPause(true); });
 addEventListener('mousemove',e=>{ if(document.pointerLockElement===cv){ ang += e.movementX*0.0025; pitch = Math.max(-0.7,Math.min(0.7,pitch + e.movementY*0.002)); }});
 
-// ===== STAMINA =====
-let stamina = 1.0;
+// ===== KOLIZJE (AABB gracza + małe kroki = brak przenikania przez ściany) =====
+const PR = 0.27;                                  // promień gracza
+function canStand(x,y){
+  return !solid(x-PR,y-PR) && !solid(x+PR,y-PR) &&
+         !solid(x-PR,y+PR) && !solid(x+PR,y+PR);
+}
+function movePlayer(dx,dy){
+  const dist = Math.hypot(dx,dy);
+  if(dist < 1e-6) return;
+  const steps = Math.max(1, Math.ceil(dist/0.12));   // dzielimy ruch na małe kroki
+  const sx = dx/steps, sy = dy/steps;
+  for(let i=0;i<steps;i++){
+    if(canStand(pX+sx, pY+sy)){ pX+=sx; pY+=sy; }
+    else if(canStand(pX+sx, pY)){ pX+=sx; }          // ślizganie po ścianie
+    else if(canStand(pX, pY+sy)){ pY+=sy; }
+    else break;
+  }
+}
+
+// ===== STAMINA =====let stamina = 1.0;
 let exhausted = false;
 const STAM_DRAIN = 0.30;     // /sek podczas biegu
 const STAM_REGEN = 0.20;     // /sek regeneracji
@@ -722,10 +740,18 @@ function loop(now){
 
   if(moving){
     bobT += dt*(running?11:7);
-    const l=Math.hypot(vx,vy), R=0.25;
-    const nx=pX+vx/l*speed, ny=pY+vy/l*speed;
-    if(!solid(nx+Math.sign(vx)*R,pY-R)&&!solid(nx+Math.sign(vx)*R,pY+R)) pX=nx;
-    if(!solid(pX-R,ny+Math.sign(vy)*R)&&!solid(pX+R,ny+Math.sign(vy)*R)) pY=ny;
+    const l=Math.hypot(vx,vy);
+    movePlayer(vx/l*speed, vy/l*speed);
+  }
+  // gdyby gracz znalazł się w ścianie — wypchnij go na wolne pole
+  if(!canStand(pX,pY)){
+    outer:
+    for(let rr=0.1; rr<=1.2; rr+=0.1){
+      for(let a=0;a<8;a++){
+        const ax=Math.cos(a*0.785398)*rr, ay=Math.sin(a*0.785398)*rr;
+        if(canStand(pX+ax,pY+ay)){ pX+=ax; pY+=ay; break outer; }
+      }
+    }
   }
   // pasek staminy
   stamFill.style.width = (stamina*100).toFixed(1)+'%';
