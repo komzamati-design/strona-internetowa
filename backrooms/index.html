@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>BACKROOMS</title>
+<style>
+  html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:monospace;}
+  #c{display:block;width:100vw;height:100vh;cursor:crosshair;}
+  #minimap{position:fixed;top:10px;right:10px;z-index:6;image-rendering:pixelated;display:none;}
+  #hud{position:fixed;top:10px;left:10px;color:#c9b458;text-shadow:0 0 6px #000;user-select:none;font-size:14px;z-index:4;}
+  #hint{position:fixed;left:50%;top:60%;transform:translateX(-50%);color:#d6c66a;text-shadow:0 0 8px #000;z-index:6;user-select:none;font-size:18px;}
+  #pause{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+         background:rgba(0,0,0,.55);color:#e8dc7a;font-family:monospace;font-size:52px;letter-spacing:10px;
+         text-shadow:0 0 18px #000;z-index:8;user-select:none;cursor:pointer;}
+  #pause small{font-size:16px;letter-spacing:2px;color:#b9ad5e;margin-top:14px;}
+  #flick{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:5;}
+  #vig{position:fixed;inset:0;pointer-events:none;z-index:3;background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.45) 100%);}
+  /* napisy jak na VHS */
+  #vhs{position:fixed;inset:0;pointer-events:none;z-index:7;font-family:"Consolas",monospace;color:#f2f2f2;text-shadow:0 0 6px rgba(255,255,255,.55), 0 0 2px rgba(255,255,255,.9);}
+  #vhs .tl{position:absolute;top:16px;left:22px;font-size:26px;letter-spacing:3px;opacity:.9;}
+  #vhs .tr{position:absolute;top:16px;right:22px;font-size:26px;letter-spacing:3px;opacity:.9;}
+  #vhs .bl{position:absolute;bottom:18px;left:22px;font-size:26px;letter-spacing:3px;opacity:.9;}
+  #vhs .br{position:absolute;bottom:18px;right:22px;font-size:24px;letter-spacing:2px;opacity:.9;}
+  #rec{color:#ff3b30;animation:blink 1.6s steps(1,end) infinite;}
+  @keyframes blink{0%,55%{opacity:1}56%,100%{opacity:.15}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<canvas id="minimap" width="192" height="192"></canvas>
+<div id="vig"></div>
+<div id="vhs">
+  <div class="tl" id="status">&#9654; PLAY</div>
+  <div class="tr"><span id="rec">&#9679;</span> REC</div>
+  <div class="bl">SP</div>
+  <div class="br"><span id="ts">00:00:00</span></div>
+</div>
+  <div id="flick" style="display:none"></div>
+<div id="hud">WASD — chodzenie | Mysz — rozglądanie | SHIFT — bieg | M — mapa | ESC — pauza</div>
+<div id="hint">Kliknij, aby przejąć mysz</div>
+<div id="pause"><div>PAUZA</div><small>kliknij albo ESC, żeby wrócić</small></div>
+<script src="textures.js"></script>
+<script>
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2');
+if(!gl){ document.body.innerHTML = '<div style="color:#d6c66a;font:24px monospace;padding:40px">Brak WebGL2 — zaktualizuj przeglądarkę.</div>'; }
+else main();
+
+function main(){
+var fboReady = false;
+const hud = document.getElementById('hud'), hint = document.getElementById('hint');
+window.onerror = (m,s,l,c)=>{ document.body.innerHTML='<div style="color:#ff6666;background:#000;font:16px monospace;padding:30px;white-space:pre-wrap;z-index:99">BLAD JS: '+m+' (linia '+l+':'+c+')</div>'; };
+
+// ===== NAPISY JAK NA VHS =====
+const tsEl = document.getElementById('ts');
+const stEl = document.getElementById('status');
+const t0 = performance.now();
+setInterval(()=>{
+  const s = Math.floor((performance.now()-t0)/1000);
+  const p = n => String(n).padStart(2,'0');
+  tsEl.textContent = p(Math.floor(s/3600))+':'+p(Math.floor(s/60)%60)+':'+p(s%60);
+}, 500);
+
+// ===== MAPA (1=ściana, 0=pusto) — pokoje + korytarze =====
+const MS = 48;
+let map = new Uint8Array(MS*MS);
+const cellSet = (x,y,v)=>{ if(x<0||y<0||x>=MS||y>=MS) return; map[y*MS+x]=v; };
+const at  = (x,y)=> (x<0||y<0||x>=MS||y>=MS) ? 1 : map[y*MS+x];
+
+let spawn = {x:2.5,y:2.5};
+(function genMap(){
+  map.fill(1);
+  const cells = [];
+  const CS = 9;
+  for(let ry=1; ry+2<MS-1; ry+=CS){
+    for(let rx=1; rx+2<MS-1; rx+=CS){
+      const w = 4+Math.floor(Math.random()*5), h = 4+Math.floor(Math.random()*5);
+      if(rx+w>MS-2||ry+h>MS-2) continue;
+      for(let y=ry;y<ry+h;y++) for(let x=rx;x<rx+w;x++) cellSet(x,y,0);
+      cells.push({x:rx,y:ry,w,h,cx:(rx+w/2)|0,cy:(ry+h/2)|0});
+    }
+  }
+  for(const c of cells){
+    const right = cells.find(o=> o.y===c.y && o.x===c.x+CS);
+    const down  = cells.find(o=> o.x===c.x && o.y===c.y+CS);
+    if(right){
+      let cy = Math.max(c.y+1, Math.min(c.y+c.h-2, c.cy + Math.floor(Math.random()*3)-1));
+      for(let x=c.x+c.w;x<=right.x;x++){ cellSet(x,cy,0); cellSet(x,cy+1,0); }
+    }
+    if(down){
+      let cx = Math.max(c.x+1, Math.min(c.x+c.w-2, c.cx + Math.floor(Math.random()*3)-1));
+      for(let y=c.y+c.h;y<=down.y;y++){ cellSet(cx,y,0); cellSet(cx+1,y,0); }
+    }
+  }
+  for(const c of cells){
+    if(Math.random()<0.55){ const oy=c.y+1+Math.floor(Math.random()*(c.h-2)); cellSet(c.x+c.w,oy,0); cellSet(c.x+c.w,oy+1,0); }
+    if(Math.random()<0.55){ const ox=c.x+1+Math.floor(Math.random()*(c.w-2)); cellSet(ox,c.y+c.h,0); cellSet(ox+1,c.y+c.h,0); }
+  }
+  for(const c of cells){
+    if(c.w>=6 && c.h>=6 && Math.random()<0.5){
+      cellSet(c.cx,c.cy,1);
+      if(Math.random()<0.4){ cellSet(c.cx+2,c.cy,1); cellSet(c.cx,c.cy+2,1); }
+    }
+  }
+  for(let y=2;y<MS-2;y++){ let done=false;
+    for(let x=2;x<MS-2;x++) if(at(x,y)===0 && at(x+1,y)===0){ spawn.x=x+0.5; spawn.y=y+0.5; done=true; break; }
+    if(done) break;
+  }
+})();
+const solid = (x,y)=> at(x|0,y|0)===1;
+
+// ===== GL =====
+const RSCALE = 0.7;   // scena renderowana w 70% rozdzielczości (dużo szybciej, VHS i tak rozmywa)
+cv.width = Math.max(2,Math.floor(innerWidth*RSCALE)); cv.height = Math.max(2,Math.floor(innerHeight*RSCALE));
+function rs(){ cv.width = Math.max(2,Math.floor(innerWidth*RSCALE)); cv.height = Math.max(2,Math.floor(innerHeight*RSCALE)); gl.viewport(0,0,cv.width,cv.height); if(fboReady) resizeSceneTex(); }
+addEventListener('resize', rs); rs();
+
+const VS = `#version 300 es
+layout(location=0) in vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 O;
+uniform sampler2D uMap;
+uniform sampler2D uWallTex, uFloorTex, uCeilTex;
+uniform int uHasTex;
+uniform vec2 uWallRep, uFloorRep, uCeilRep;
+uniform vec2 uRes, uPos;
+uniform vec2 uDir;
+uniform float uTime, uPitch, uEye;
+const float TANH = 0.57735;   // FOV 60°
+const float WC = 1.35;        // wysokość sufitu
+const float MS = 48.0;        // rozmiar mapy (musi się zgadzać z JS)
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+1.0),f.x), f.y);
+}
+
+// tapeta Backrooms — słynny żółty wzór: kolumny strzałek '^' (Level 0)
+float aa(float d){ // antyaliasowana krawędź wzoru
+  return clamp(0.5 - d, 0., 1.);
+}
+// ---- TAPETA (Level 0): gęste kolumny zagnieżdżonych chevronów '^^' ----
+float wallPattern(vec2 uv){
+  float u = uv.x;                          // współrzędna świata
+  float v = clamp(uv.y, 0., 1.);
+  float nu = 8.0;                          // kolumny (gęsto, jak na zdjęciu)
+  float nv = 12.0;                         // chevrony na wysokość ściany
+  float colf = u*nu;
+  float fu = fract(colf);
+  float fv = fract(v*nv);
+  // zagnieżdżone chevrony '^' (dwa poziomy, puste w środku)
+  float slope = 1.15;
+  float d  = abs(fv-0.5) - (0.5-abs(fu-0.5))*slope;
+  float c1 = clamp(aa(abs(d)-0.135) - aa(abs(d)-0.058), 0., 1.);
+  float d2 = abs(fv-0.5) - (0.5-abs(fu-0.5))*slope*0.52;
+  float c2 = clamp(aa(abs(d2)-0.055) - aa(abs(d2)-0.024), 0., 1.)*0.75;
+  float chev = max(c1, c2);
+  // pionowy słupek przez środek kolumny
+  float stem = aa(abs(fu-0.5)-0.020)*0.7;
+  // cienkie pionowe linie na krawędziach kolumn
+  float edge = aa(abs(fu-0.5)-0.474)*0.45;
+  return clamp(chev + stem + edge, 0., 1.);
+}
+
+vec3 wallTex(vec2 uv, float side){
+  float u = uv.x;
+  float v = clamp(uv.y, 0., 1.);
+  vec3 base = vec3(0.80,0.76,0.38);        // żółty #CCC35E (jasna tapeta)
+  vec3 ink  = vec3(0.52,0.47,0.16);        // brązowo-oliwkowy #837723 (wzór)
+  float pat = wallPattern(uv);
+  vec3 c = mix(base, ink, pat*0.95);
+  // drobna faktura papieru
+  c *= 0.994 + 0.006*vnoise(vec2(u*160.0, v*90.0));
+  // lekki relief wzoru (światłocień w druku)
+  c *= 1.0 + (pat-0.5)*0.05;
+  // biały cokół przy podłodze
+  c = mix(c, vec3(0.91,0.91,0.86), smoothstep(0.078,0.060,v));
+  return c * mix(1.0, 0.90, side);
+}
+
+// bump mapping: delikatny relief wzoru tapety (płaski, matowy nadruk)
+vec3 wallNormal(vec2 uv, vec3 N, vec3 T, vec3 B){
+  float e = 0.0025;
+  float h  = wallPattern(uv);
+  float hu = wallPattern(uv + vec2(e,0.));
+  float hv = wallPattern(uv + vec2(0.,e));
+  float k  = 0.0006;
+  return normalize(N - T*((hu-h)/e)*k - B*((hv-h)/e)*k);
+}
+
+// ---- PODŁOGA: brązowa, cętkowana wykładzina (jak na zdjęciu) ----
+vec3 floorTex(vec2 p, float t){
+  // wielkie, miękkie łaty + średnie i drobne cętki
+  float b1 = vnoise(p*0.85);
+  float b2 = vnoise(p*2.6);
+  float b3 = vnoise(p*7.0);
+  float b4 = vnoise(p*18.0);
+  float blotch = b1*0.45 + b2*0.30 + b3*0.15 + b4*0.10;
+  float m = smoothstep(0.30,0.68, blotch);
+  vec3 cLight = vec3(0.55,0.42,0.18);   // ochra/piaskowy brąz
+  vec3 cMid   = vec3(0.34,0.24,0.10);
+  vec3 cDark  = vec3(0.15,0.09,0.04);   // ciemny brąz
+  vec3 c = m<0.5 ? mix(cLight,cMid, m*2.0) : mix(cMid,cDark,(m-0.5)*2.0);
+  // ziarno włókien (wygasza się z odległością)
+  float det = clamp(1.0 - t*0.10, 0.0, 1.0);
+  float fib = vnoise(p*45.0)*0.5 + hash(floor(p*34.0))*0.5;
+  c *= 0.90 + 0.22*fib*det;
+  return c;
+}
+
+// bump wykładziny — delikatny relief włókien
+vec3 floorNormal(vec2 p, float t){
+  float det = clamp(1.0 - t*0.20, 0.0, 1.0);
+  if(det <= 0.001) return vec3(0.,1.,0.);
+  float e = 0.03;
+  float h  = vnoise(p*38.0);
+  float hx = vnoise((p+vec2(e,0.))*38.0);
+  float hy = vnoise((p+vec2(0.,e))*38.0);
+  float k = 0.004*det;
+  return normalize(vec3(0.,1.,0.) - vec3((hx-h)/e, 0., (hy-h)/e)*k);
+}
+// bardzo delikatne zaciemnienie podłogi przy ścianach (kontaktowy cień)
+float floorAO(vec2 p){
+  float w = 0.0;
+  w += texelFetch(uMap, ivec2(int(p.x+0.34),int(p.y)),0).r;
+  w += texelFetch(uMap, ivec2(int(p.x-0.34),int(p.y)),0).r;
+  w += texelFetch(uMap, ivec2(int(p.x),int(p.y+0.34)),0).r;
+  w += texelFetch(uMap, ivec2(int(p.x),int(p.y-0.34)),0).r;
+  return 1.0 - clamp(w*0.028, 0., 0.11);
+}
+
+vec3 ceilTex(vec2 p){
+  // SZARE płyty sufitowe z wyraźnymi szczelinami
+  vec2 f = fract(p);
+  vec2 e = min(f, 1.0-f);
+  float line = 1.0 - smoothstep(0.015,0.040, min(e.x,e.y));
+  vec3 c = vec3(0.60,0.60,0.585)*(0.96+0.04*vnoise(p*18.0));
+  return c*mix(1.0,0.55,line);
+}
+
+bool isLightCell(vec2 c){ return mod(c.x,2.)==0. && mod(c.y,2.)==0.; }
+
+// oświetlenie — INNE dla każdego materiału (mat: 0=podłoga, 1=sufit, 2=ściana)
+vec3 lit(vec3 P, vec3 N, vec3 viewDir, int mat){
+  vec3 sum = vec3(0.);
+  vec2 base = floor((P.xz-0.5)/2.0);
+  for(int i=-1;i<=1;i++) for(int j=-1;j<=1;j++){
+    vec2 id = base+vec2(i,j);
+    if(mod(id.x,2.)!=0.||mod(id.y,2.)!=0.) continue;
+    vec3 L = vec3(id.x*2.0+0.5, WC-0.04, id.y*2.0+0.5);
+    if(L.x<0.5||L.z<0.5||L.x>float(MS)-0.5||L.z>float(MS)-0.5) continue;
+    // lampa świeci tylko, jeśli pod nią jest korytarz/pokój
+    float on = texelFetch(uMap, ivec2(int(L.x),int(L.z)),0).r>0.5 ? 0.0:1.0;
+    vec3 toL = L-P; float d2 = dot(toL,toL)+0.02;
+    vec3 Ldir = toL*inversesqrt(d2);
+    float ndl = clamp(dot(Ldir,N),0.,1.);
+    float att = 1.0/(0.6+d2*3.0);
+    float diff = ndl;
+    float spec = 0.0;
+
+    if(mat==2){
+      // ŚCIANA: jednolite światło na CAŁEJ wysokości (liczone w połowie wysokości,
+      // żeby dół ściany był identyczny jak góra)
+      vec3 Pm = vec3(P.x, WC*0.5, P.z);
+      vec3 toLm = L - Pm;
+      float d2m = dot(toLm,toLm) + 0.02;
+      vec3 Ldirm = toLm*inversesqrt(d2m);
+      att = 1.0/(0.6 + d2m*3.0);
+      diff = clamp(dot(Ldirm,N),0.,1.)*0.9 + 0.10;
+      spec = pow(clamp(dot(reflect(viewDir,Ldirm),viewDir),0.,1.),28.0)*0.03;
+    } else if(mat==0){
+      // PODŁOGA: wykładzina — miękkie światło + aksamitny odblask (velvet)
+      float wrap = clamp((dot(Ldir,N)+0.40)/1.40, 0., 1.);
+      float velvet = pow(1.0-clamp(dot(N,viewDir),0.,1.), 2.0);
+      att *= 0.80;
+      diff = wrap*0.85 + 0.15;
+      spec = velvet*0.02;                 // kafle — matowe
+    } else {
+      // SUFIT: płyty — prawie jednolite, płaskie rozproszenie
+      diff = ndl*0.55 + 0.45;
+    }
+    sum += vec3(1.0,0.94,0.75)*1.35*on*att*diff + spec*on;
+  }
+  // własny ambient dla każdego materiału
+  if(mat==2) return sum + vec3(0.22,0.21,0.14);
+  if(mat==0) return sum + vec3(0.16,0.15,0.10);
+  return sum + vec3(0.20,0.19,0.14);
+}
+// świetlówka sufitowa: wpuszczony troffer (jasna płyta + szara obudowa)
+vec3 emitter(vec2 p, vec2 cellId){
+  vec2 l = fract(p);
+  bool lampCell = mod(cellId.x,2.)==0. && mod(cellId.y,2.)==0.;
+  if(!lampCell) return vec3(0.);
+  // obudowa troffera (bezel)
+  bool housing = l.x>0.05 && l.x<0.95 && l.y>0.16 && l.y<0.84;
+  if(!housing) return vec3(0.);
+  // świecąca płyta — jasny biały
+  bool panel = l.x>0.09 && l.x<0.91 && l.y>0.21 && l.y<0.79;
+  if(panel) return vec3(1.0,0.99,0.95)*2.6;
+  // szara obudowa rozświetlona od dołu
+  return vec3(0.58,0.58,0.56)*1.02;
+}
+
+void main(){
+  vec2 uv = vec2( (gl_FragCoord.x/uRes.x*2.0-1.0)*(uRes.x/uRes.y), gl_FragCoord.y/uRes.y*2.0-1.0 );
+  vec2 dir = uDir;
+  vec3 f = vec3(dir.x,0.,dir.y);
+  vec3 r = vec3(-dir.y,0.,dir.x);
+  vec3 up = vec3(0.,1.,0.);
+  vec3 rd = normalize( f + r*uv.x*0.57735 + up*uv.y*0.57735 );
+  // pitch — obrót wokół osi prawej
+  float cp=cos(uPitch), sp=sin(uPitch);
+  rd = rd*cp + cross(r,rd)*sp + r*dot(r,rd)*(1.-cp);
+  rd = normalize(rd);
+
+  // DDA 2D
+  int mx=int(floor(uPos.x)), mz=int(floor(uPos.y));
+  vec2 idx = 1.0/vec2(rd.x==0.?1e-6:rd.x, rd.z==0.?1e-6:rd.z);
+  int sx = rd.x<0.?-1:1, sz = rd.z<0.?-1:1;
+  float tdx = abs(idx.x), tdz = abs(idx.y);
+  float sdx = (rd.x<0.? (uPos.x-float(mx)) : (float(mx)+1.-uPos.x))*(rd.x==0.?1e9:abs(1.0/rd.x));
+  float sdz = (rd.z<0.? (uPos.y-float(mz)) : (float(mz)+1.-uPos.y))*(rd.z==0.?1e9:abs(1.0/rd.z));
+  float tW=1e9; int side=0;
+  for(int i=0;i<96;i++){
+    if(sdx<sdz){ sdx+=tdx; mx+=sx; side=0; } else { sdz+=tdz; mz+=sz; side=1; }
+    if(texelFetch(uMap, ivec2(mx,mz),0).r>0.5){ tW = side==0? sdx-tdx : sdz-tdz; break; }
+  }
+  // płaszczyzny pionowe
+  float tF = rd.y<-1e-4 ? uEye/-rd.y : 1e9;
+  float tC = rd.y> 1e-4 ? (WC-uEye)/rd.y : 1e9;
+
+  float t; vec3 P; int kind; // 0=floor 1=ceil 2=wall
+  if(tF<tW && tF<=tC){ t=tF; kind=0; }
+  else if(tC<tW){ t=tC; kind=1; }
+  else { t=tW; kind=2; }
+  t = max(t, 0.02);
+  P = vec3(uPos.x,0.,uPos.y) + rd*t;
+
+  vec3 albedo; vec3 N;
+  if(kind==0){
+    if(uHasTex==1){
+      albedo = texture(uFloorTex, P.xz*uFloorRep).rgb * floorAO(P.xz);
+    } else {
+      albedo = floorTex(P.xz, t) * floorAO(P.xz);
+    }
+    N = floorNormal(P.xz, t);
+  }
+  else if(kind==1){
+    albedo = ceilTex(P.xz);                       // szary sufit (proceduralny)
+    vec3 e = emitter(P.xz, floor(P.xz));
+    if(dot(e,e)>0.01){
+      O = vec4(e, 1.0);
+      return;
+    }
+    N = vec3(0.,-1.,0.);
+  }
+  else {
+    float w = side==0 ? P.z : P.x;
+    float y = P.y/WC;
+    vec2 wuv = vec2(w, y) * uWallRep;
+    vec3 Tw = side==0 ? vec3(0,0,1) : vec3(1,0,0);
+    N = side==0 ? vec3(rd.x>0.?-1.:1.,0,0) : vec3(0,0,rd.z>0.?-1.:1.);
+    if(uHasTex==1){
+      albedo = texture(uWallTex, wuv).rgb * mix(1.0, 0.90, float(side));
+      // relief z luminancji prawdziwej tekstury
+      float h0 = dot(texture(uWallTex, wuv).rgb, vec3(0.299,0.587,0.114));
+      float hu = dot(textureOffset(uWallTex, wuv, ivec2(2,0)).rgb, vec3(0.299,0.587,0.114));
+      float hv = dot(textureOffset(uWallTex, wuv, ivec2(0,2)).rgb, vec3(0.299,0.587,0.114));
+      N = normalize(N - Tw*(hu-h0)*0.55 - vec3(0.,1.,0.)*(hv-h0)*0.55);
+    } else {
+      albedo = wallTex(vec2(w,y), side==1?1.:0.);
+      albedo *= mix(0.82, 1.02, vnoise(P.xz*0.35));
+      N = wallNormal(vec2(w,y), N, Tw, vec3(0,1,0));
+    }
+  }
+  vec3 col = albedo * lit(P, N, rd, kind);
+  // delikatne przygaszanie z odległością (bez mgły)
+  col *= clamp(1.60 - t*0.032, 0.55, 1.60);
+  // tone map
+  col = 1.0 - exp(-col*1.75);
+  // vignette + grain
+  vec2 q = gl_FragCoord.xy/uRes;
+  col *= 0.35+0.65*pow(16.0*q.x*q.y*(1.-q.x)*(1.-q.y),0.25);
+  col += (hash(gl_FragCoord.xy + fract(uTime)*100.0)-0.5)*0.035;
+  O = vec4(col,1.0);
+}`;
+
+// ===== SHADER VHS (post-processing) =====
+const FS_POST = `#version 300 es
+precision highp float;
+out vec4 O;
+uniform sampler2D uScene;
+uniform vec2 uRes;
+uniform float uTime;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+1.0),f.x), f.y);
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  float t = uTime;
+
+  // 1) lekkie falowanie taśmy (jitter per linia)
+  float line = floor(gl_FragCoord.y);
+  float jitter = (hash(vec2(line, floor(t*24.0)))-0.5) * 0.0016;
+  // 2) pasek "tracking" przesuwający się w pionie (silne zaburzenie)
+  float band = fract(uv.y*1.0 + t*0.13);
+  float inBand = 1.0 - smoothstep(0.0, 0.035, abs(band-0.5));
+  jitter += inBand * (hash(vec2(line, floor(t*30.0)))-0.5) * 0.010;
+  // 3) globalne, rzadkie szarpnięcia taśmy
+  float glitch = step(0.994, hash(vec2(floor(t*8.0), 3.1)));
+  jitter += glitch * 0.012 * (hash(vec2(line, floor(t*60.0)))-0.5);
+
+  vec2 duv = vec2(uv.x + jitter, uv.y);
+
+  // 4) aberracja chromatyczna (RGB rozjechane w poziomie)
+  float ca = 0.0016 + inBand*0.004 + glitch*0.004;
+  float rC = texture(uScene, duv + vec2( ca, 0.0)).r;
+  float gC = texture(uScene, duv).g;
+  float bC = texture(uScene, duv - vec2( ca, 0.0)).b;
+  vec3 col = vec3(rC, gC, bC);
+
+  // 5) rozmycie taśmy (poziomy "smear" jasnych miejsc)
+  vec3 smear = texture(uScene, duv - vec2(0.006,0.0)).rgb
+             + texture(uScene, duv - vec2(0.012,0.0)).rgb;
+  col = mix(col, col*0.7 + smear*0.16, 0.35);
+
+  // 6) scanlines (linie nośnych)
+  float scan = 0.94 + 0.06*sin(uv.y*uRes.y*3.14159);
+  col *= scan;
+  // subtelne pionowe linie maski
+  col *= 0.99 + 0.01*sin(uv.x*uRes.x*3.14159*0.5);
+
+  // 7) rolling bar (jasny pas jadący po ekranie)
+  float roll = fract(uv.y + t*0.10);
+  col *= 1.0 + 0.05*(1.0 - smoothstep(0.0,0.25,abs(roll-0.5)));
+
+  // 8) szum taśmy + drobny "dropout" (białe kropki)
+  col += (hash(gl_FragCoord.xy + fract(t)*77.0)-0.5)*0.045;
+  float drop = step(0.9995, hash(gl_FragCoord.xy + floor(t*20.0)));
+  col += drop*0.5;
+
+  // 9) lekka utrata koloru i podbicie kontrastu (jak VHS)
+  float lum = dot(col, vec3(0.299,0.587,0.114));
+  col = mix(col, vec3(lum), 0.15);
+  col = clamp((col-0.5)*1.08 + 0.52, 0.0, 1.0);
+
+  // 10) zanikanie brzegów (CRT) i przeplot linii
+  vec2 q = uv*2.0-1.0;
+  col *= 1.0 - 0.10*dot(q,q);
+  O = vec4(col, 1.0);
+}`;
+
+// kompilacja
+function shErr(msg){ document.body.innerHTML = '<div style="color:#ff6666;background:#000;font:16px monospace;padding:30px;white-space:pre-wrap;z-index:99">'+msg+'</div>'; }
+function sh(type, src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) shErr('BLAD SHADERA: '+gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) shErr('BLAD LINKU: '+gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = {};
+for(const n of ['uMap','uRes','uPos','uDir','uTime','uPitch','uEye','uWallTex','uFloorTex','uCeilTex','uHasTex','uWallRep','uFloorRep','uCeilRep']) U[n]=gl.getUniformLocation(prog,n);
+
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+
+// tekstura mapy
+const mapTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, mapTex);
+{
+  const d = new Uint8Array(MS*MS*4);
+  for(let i=0;i<MS*MS;i++){ d[i*4]=map[i]?255:0; }
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,MS,MS,0,gl.RGBA,gl.UNSIGNED_BYTE,d);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+}
+gl.uniform1i(U.uMap,0);
+
+// ===== SHADER VHS (post) + bufor sceny =====
+const progPost = gl.createProgram();
+gl.attachShader(progPost, sh(gl.VERTEX_SHADER, VS));
+gl.attachShader(progPost, sh(gl.FRAGMENT_SHADER, FS_POST));
+gl.linkProgram(progPost);
+if(!gl.getProgramParameter(progPost,gl.LINK_STATUS)) shErr('BLAD LINKU VHS: '+gl.getProgramInfoLog(progPost));
+const UP = {};
+for(const n of ['uScene','uRes','uTime']) UP[n]=gl.getUniformLocation(progPost,n);
+
+const sceneTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0+4);
+gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,cv.width,cv.height,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+const fbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+fboReady = true;
+function resizeSceneTex(){
+  gl.activeTexture(gl.TEXTURE0+4);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,cv.width,cv.height,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+}
+
+// ===== PRAWDZIWE TEKSTURY ze zdjęcia (textures.js) =====
+let hasTex = 0;
+function loadTex(url, unit){
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0+unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([128,128,128,255]));
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  const im = new Image();
+  im.onload = ()=>{
+    gl.activeTexture(gl.TEXTURE0+unit);
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+  };
+  im.src = url;
+  return t;
+}
+if(typeof TEX !== 'undefined'){
+  loadTex(TEX.wall , 1);
+  loadTex(TEX.floor, 2);
+  loadTex(TEX.ceil , 3);
+  gl.uniform1i(U.uWallTex , 1);
+  gl.uniform1i(U.uFloorTex, 2);
+  gl.uniform1i(U.uCeilTex , 3);
+  gl.uniform1i(U.uHasTex, 1);
+  hasTex = 1;
+  // skala kafelkowania (jednostki świata na jedno powtórzenie tekstury)
+  gl.uniform2f(U.uWallRep , 1.36, 1.82);           // ściana: piksele 1:1 (bez zniekształceń)
+  gl.uniform2f(U.uFloorRep, 1.0/2.2 , 1.0/1.7);    // dywan
+  gl.uniform2f(U.uCeilRep , 1.0/3.6 , 1.0/0.55);   // płyty sufitu
+} else {
+  gl.uniform1i(U.uHasTex, 0);
+}
+
+// ===== GRACZ =====
+let pX=spawn.x, pY=spawn.y, ang=Math.random()*6.28, pitch=0, bobT=0;
+let paused=false, frozenT=0;
+const pauseEl = document.getElementById('pause');
+function setPause(v){
+  paused = v;
+  if(v){ frozenT = performance.now()/1000; pauseEl.style.display='flex'; if(document.pointerLockElement===cv) document.exitPointerLock(); }
+  else { pauseEl.style.display='none'; }
+}
+const keys={};
+addEventListener('keydown',e=>{ 
+  if(e.code==='Escape'){ setPause(!paused); return; }
+  if(paused) return;
+  keys[e.code]=true;
+  if(['KeyW','KeyA','KeyS','KeyD'].includes(e.code)) e.preventDefault();
+  if(e.code==='KeyM'){const mm=document.getElementById('minimap'); mm.style.display = mm.style.display==='none'?'block':'none';}
+});
+addEventListener('keyup',e=>keys[e.code]=false);
+pauseEl.addEventListener('click',()=>{ setPause(false); if(document.pointerLockElement!==cv) cv.requestPointerLock(); });
+cv.addEventListener('click',()=>{ if(paused){ setPause(false); } if(document.pointerLockElement!==cv) cv.requestPointerLock(); hint.remove(); });
+document.addEventListener('keydown',()=>{ if(!paused && document.pointerLockElement!==cv) cv.requestPointerLock(); });
+addEventListener('pointerlockchange',()=>{ if(document.pointerLockElement!==cv && !paused) setPause(true); });
+addEventListener('mousemove',e=>{ if(document.pointerLockElement===cv){ ang += e.movementX*0.0025; pitch = Math.max(-0.7,Math.min(0.7,pitch + e.movementY*0.002)); }});
+
+// dźwięk
+let ac=null;
+document.addEventListener('click',()=>{ if(!ac){
+  ac=new (window.AudioContext||window.webkitAudioContext)();
+  const o=ac.createOscillator(), g=ac.createGain();
+  o.type='sawtooth'; o.frequency.value=120;
+  const f=ac.createBiquadFilter(); f.type='lowpass'; f.frequency.value=300;
+  g.gain.value=0.015; o.connect(f); f.connect(g); g.connect(ac.destination); o.start();
+}},{once:true});
+
+const EYE=0.55;
+let last=performance.now();
+function loop(now){
+  const dt=Math.min((now-last)/1000,0.05); last=now;
+  const speed=(paused?0:(keys.ShiftLeft||keys.ShiftRight?4.4:2.3))*dt;
+  let vx=0,vy=0; const c=Math.cos(ang), s=Math.sin(ang);
+  if(!paused){
+    if(keys.KeyW){vx+=c;vy+=s;} if(keys.KeyS){vx-=c;vy-=s;}
+    if(keys.KeyA){vx+=s;vy-=c;} if(keys.KeyD){vx-=s;vy+=c;}
+  }
+  const moving = vx!==0||vy!==0;
+  if(moving){
+    bobT += dt*(keys.ShiftLeft?11:7);
+    const l=Math.hypot(vx,vy), R=0.25;
+    const nx=pX+vx/l*speed, ny=pY+vy/l*speed;
+    if(!solid(nx+Math.sign(vx)*R,pY-R)&&!solid(nx+Math.sign(vx)*R,pY+R)) pX=nx;
+    if(!solid(pX-R,ny+Math.sign(vy)*R)&&!solid(pX+R,ny+Math.sign(vy)*R)) pY=ny;
+  }
+
+  const eye = EYE + Math.sin(bobT)*0.012*(moving?1:0);
+  const tNow = paused ? frozenT : now/1000;
+  gl.useProgram(prog);                            // uniformy scenerii
+  gl.uniform2f(U.uRes, cv.width, cv.height);
+  gl.uniform2f(U.uPos, pX, pY);
+  gl.uniform2f(U.uDir, Math.cos(ang), Math.sin(ang));
+  gl.uniform1f(U.uTime, tNow);
+  gl.uniform1f(U.uPitch, -pitch*0.55);
+  gl.uniform1f(U.uEye, eye);
+
+  // --- przebieg 1: scena do bufora ---
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // --- przebieg 2: efekt VHS na ekran ---
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.useProgram(progPost);
+  gl.activeTexture(gl.TEXTURE0+4);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.uniform1i(UP.uScene, 4);
+  gl.uniform2f(UP.uRes, cv.width, cv.height);
+  gl.uniform1f(UP.uTime, tNow);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // (flicker usunięty — światła nie migają)
+
+  // minimap
+  const mm=document.getElementById('minimap');
+  if(mm.style.display!=='none'){
+    const mc=mm.getContext('2d'); const sc=4;
+    mc.fillStyle='rgba(0,0,0,.75)'; mc.fillRect(0,0,mm.width,mm.height);
+    for(let y=0;y<MS;y++) for(let x=0;x<MS;x++){
+      if(!at(x,y)) continue;
+      mc.fillStyle='#3a331a'; mc.fillRect(x*sc,y*sc,sc,sc);
+    }
+    mc.fillStyle='#ff5555'; mc.fillRect(pX*sc-2,pY*sc-2,4,4);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>

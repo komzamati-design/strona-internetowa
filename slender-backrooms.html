@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>SLENDER BACKROOMS 3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:monospace}
+  #c{display:block;filter:contrast(1.06) saturate(1.35) brightness(1.02) hue-rotate(-6deg);}
+  #c::after{content:''}
+  #hud{position:fixed;color:#fff;text-shadow:0 0 6px #000;top:10px;left:12px;font-size:22px;user-select:none;z-index:3;letter-spacing:2px}
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);color:#fff;display:none;
+    align-items:center;justify-content:center;text-align:center;font-size:22px;z-index:5;user-select:none}
+  #overlay b{color:#f00;font-size:64px;display:block;letter-spacing:6px;text-shadow:0 0 30px #f00}
+  #overlay .ok b{color:#0f0;text-shadow:0 0 30px #0f0}
+  #flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:4}
+  @keyframes roll{0%{top:-15%}100%{top:105%}}
+  @keyframes grain{0%{transform:translate(0,0)}25%{transform:translate(-18px,12px)}50%{transform:translate(14px,-10px)}75%{transform:translate(-10px,-16px)}100%{transform:translate(16px,14px)}}
+  #vhsTime{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+  <canvas id="c" style="cursor:crosshair"></canvas>
+  <div id="cwrap" style="position:fixed;inset:0;mix-blend-mode:overlay;pointer-events:none;z-index:3;background:linear-gradient(90deg,rgba(0,255,255,0.09),transparent 12%,transparent 88%,rgba(255,0,128,0.09))"></div>
+  <div id="hud">KSIĄŻKI: 0 / 5</div>
+  <div id="vhs" style="position:fixed;inset:0;pointer-events:none;z-index:4;">
+    <div style="position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(0,0,0,0.22) 0 2px,transparent 2px 4px);mix-blend-mode:multiply"></div>
+    <div id="vhsRoll" style="position:absolute;left:0;width:100%;height:90px;background:linear-gradient(180deg,transparent,rgba(255,255,255,0.06),transparent);animation:roll 8s linear infinite"></div>
+    <div style="position:absolute;top:46px;left:16px;color:#eee;font-size:20px;text-shadow:0 0 6px #000;letter-spacing:1px">● REC</div>
+    <div id="vhsTime" style="position:absolute;bottom:12px;right:16px;color:#eee;font-size:18px;text-shadow:0 0 6px #000">00:00:00</div>
+    <div style="position:absolute;bottom:40px;left:16px;color:#9df;font-size:15px;text-shadow:0 0 6px #000">PLAY ▶</div>
+    <div id="grain" style="position:absolute;inset:-40px;opacity:0.09;background-image:url(&quot;data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>&quot;);animation:grain .5s steps(4) infinite"></div>
+  </div>
+  <canvas id="minimap" width="192" height="192" style="position:fixed;top:10px;right:10px;z-index:3;background:rgba(0,0,0,0.55);border:1px solid #444"></canvas>
+  <div id="overlay"></div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+<div id="scare" style="position:fixed;inset:0;display:none;z-index:6;background:#000;align-items:center;justify-content:center"></div>
+<script type="module">
+import * as THREE from 'three';
+
+/* ============ POZIOMY ============ */
+let level=1;
+try{level=Math.max(1,parseInt(localStorage.getItem('slbr_lvl')||'1'));}catch(e){}
+
+const MW=24,MH=24;
+const SCALE=2+(level-1)*0.45; // wciej wyzszy poziom = szersze korytarze
+const map=[];
+let spawnCell=[MW-2,MH-2],mSpawnCell=[MW-2,MH-2],doorCell=[3,6];
+
+function genMap(){
+  // DEMA labirynt: DFS wysp
+  for(let y=0;y<MH;y++)map.push(Array(MW).fill(1));
+  const stack=[[9,1]];map[1][9]=0;
+  while(stack.length){
+    const[cx,cy]=stack[stack.length-1];
+    const dirs=[[2,0],[-2,0],[0,2],[0,-2]].sort(()=>Math.random()-0.5);
+    let ok=false;
+    for(const[dx,dy]of dirs){
+      const nx=cx+dx,ny=cy+dy;
+      if(nx>7&&ny>0&&nx<MW-1&&ny<MH-1&&map[ny][nx]===1){
+        map[cy+dy/2][cx+dx/2]=0;map[ny][nx]=0;stack.push([nx,ny]);ok=true;break;
+      }
+    }
+    if(!ok)stack.pop();
+  }
+  // korytarz od drzwi do labiryntu
+  for(let x=3;x<=9;x++)map[7][x]=0;
+  // polaczenia (petle - szersze odczucie korytarzy)
+  for(let i=0;i<26;i++){
+    const x=8+(Math.random()*(MW-10)|0),y=2+(Math.random()*(MH-4)|0);
+    if(map[y][x]===1 && map[y][x-1]+map[y][x+1]+map[y-1][x]+map[y+1][x]<=2)map[y][x]=0;
+  }
+  // DUZY POKOJ SPAWN (zakaz korytarzy w srodku)
+  for(let y=1;y<=6;y++)for(let x=1;x<=6;x++)map[y][x]=0;
+  for(let x=1;x<=7;x++)map[6][x]=1; // siddnienna sciana pokoju
+  for(let y=0;y<=6;y++)map[y][7]=1;   // wschodnia sciana pokoju
+  map[6][7]=1;
+  doorCell=[3,6];
+  map[6][3]=0; // PRZEJSCIE PRZEZ DRZWI
+  map[7][3]=0; // korytarz za drzwiami
+  // start gracza w srodku pokoju
+  let sc=[3.5,3.5];
+  // monster daleko od pokoju
+  let ok=false,mx0=0,my0=0;
+  while(!ok){
+    mx0=8+((Math.random()*(MW-10))|0);my0=2+((Math.random()*(MH-4))|0);
+    ok=map[my0][mx0]===0;
+  }
+  spawnCell=sc;mSpawnCell=[mx0+0.5,my0+0.5];
+}
+genMap();
+
+let spawn=[(spawnCell[0]+0)*SCALE,1.5],mSpawn=[mSpawnCell[0]*SCALE,mSpawnCell[1]*SCALE];
+spawn=[spawnCell[0]*SCALE,spawnCell[1]*SCALE];
+
+const cellWall=(cx,cy)=>cx<0||cy<0||cx>=MW||cy>=MH||map[cy|0][cx|0]===1;
+const isWall=(x,y)=>cellWall(x/SCALE,y/SCALE); // przyjmuje wspolrzedne świata
+
+/* ============ TEKSTURY PROCEDURALNE ============ */
+function canvasTex(base,grout,tilePx,spots){
+  const t=document.createElement('canvas');t.width=t.height=256;
+  const g=t.getContext('2d');
+  g.fillStyle=grout;g.fillRect(0,0,256,256);
+  g.fillStyle=base;
+  for(let y=0;y<256;y+=tilePx)for(let x=0;x<256;x+=tilePx){
+    const v=(Math.random()*14-7)|0;
+    g.fillRect(x+2,y+2,tilePx-4,tilePx-4);
+    g.fillStyle=shade(base,v);
+  }
+  if(spots){ // podlight ciemne plamy
+    for(let i=0;i<25;i++){
+      g.fillStyle=`rgba(0,0,0,${0.03+Math.random()*0.1})`;
+      g.beginPath();g.ellipse(Math.random()*256,Math.random()*256,8+Math.random()*30,6+Math.random()*18,Math.random()*3,0,7);g.fill();
+    }
+  }
+  function shade(hex,d){
+    const n=parseInt(hex.slice(1),16);
+    const r=Math.max(0,Math.min(255,(n>>16)+d)),g2=Math.max(0,Math.min(255,((n>>8)&255)+d)),b=Math.max(0,Math.min(255,(n&255)+d));
+    return `rgb(${r},${g2},${b})`;
+  }
+  const tex=new THREE.CanvasTexture(t);
+  tex.wrapS=tex.wrapT=THREE.RepeatWrapping;
+  tex.anisotropy=8;
+  return tex;
+}
+/* paleta scian i podlog zalezna od poziomu */
+const PAL=[
+ {w:'#ffffff',wg:'#c8c8d0',f:'#3f7bff',fg:'#133bb0',c:'#ffffff',cg:'#c9c9d2'},  // lvl1: jasny bialy kafel + jasnoniebieska podloga
+ {w:'#c8b89a',wg:'#70665a',f:'#6d4a28',fg:'#3a2a16',c:'#8a7a60',cg:'#4c4234'},  // lvl2: stare drewno/rudz (jasniejsze)
+ {w:'#a8c4a8',wg:'#647a64',f:'#2c4a52',fg:'#153040',c:'#8aa898',cg:'#4a5f55'},  // lvl3: szpitalne morskie
+ {w:'#bfa8c2',wg:'#6a556a',f:'#3a2a48',fg:'#1e1230',c:'#a38aa0',cg:'#5a4a60'},  // lvl4: purpura
+];
+const pal=PAL[(level-1)%PAL.length];
+const wallTex=canvasTex(pal.w,pal.wg,64,level===1);
+const floorTex=canvasTex(pal.f,pal.fg,64,false);
+const ceilTex=canvasTex(pal.c,pal.cg,64,false);
+
+/* ============ SCENA 3D ============ */
+const renderer=new THREE.WebGLRenderer({canvas:document.getElementById('c'),antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=0.9;
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x05070c);
+scene.fog=new THREE.Fog(0x0a0f1c,6,34);
+
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.05,60);
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+const world=new THREE.Group();scene.add(world);
+
+/* ============ MATERIAŁY ============ */
+const wallMat=new THREE.MeshStandardMaterial({map:wallTex,roughness:0.55,metalness:0.05,color:0xffffff});
+const bMat=new THREE.MeshStandardMaterial({color:0x777,roughness:0.9});
+
+/* ============ BUDOWA ŚWIATA (ściany = bloki) ============ */
+const boxGeo=new THREE.BoxGeometry(SCALE,3,SCALE);
+for(let y=0;y<MH;y++)for(let x=0;x<MW;x++){
+  if(map[y][x]!==1)continue;
+  const m=new THREE.Mesh(boxGeo,wallMat);
+  m.position.set((x+.5)*SCALE,1.5,(y+.5)*SCALE);
+  m.castShadow=m.receiveShadow=true;
+  world.add(m);
+}
+
+/* podloga */
+floorTex.repeat.set(MW,MH);
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(MW*SCALE,MH*SCALE),
+  new THREE.MeshStandardMaterial({map:floorTex,roughness:0.4,metalness:0.15}));
+floor.rotation.x=-Math.PI/2;
+floor.position.set(MW*SCALE/2,0,MH*SCALE/2);
+floor.receiveShadow=true;
+world.add(floor);
+
+/* sufit */
+ceilTex.repeat.set(MW,MH);
+const ceil=new THREE.Mesh(new THREE.PlaneGeometry(MW*SCALE,MH*SCALE),
+  new THREE.MeshStandardMaterial({map:ceilTex,roughness:0.95}));
+ceil.rotation.x=Math.PI/2;
+ceil.position.set(MW*SCALE/2,3,MH*SCALE/2);
+world.add(ceil);
+
+/* ============ DUZY SPAWN + DRZWI WYZWALAJACE ============ */
+let monsterActive=false;
+spawn=[3.5*SCALE,2.5*SCALE]; // srodek duzego pokoju spawn
+mSpawn=[(MW-2.5)*SCALE,(MH-2.5)*SCALE];
+{ // rama drzwi na poludniu pokoju (komorka x=3, y=6)
+  const frameMat=new THREE.MeshStandardMaterial({color:0x3b2a18,roughness:0.6});
+  const p1=new THREE.Mesh(new THREE.BoxGeometry(0.25,2.7,0.35),frameMat);
+  const p2=p1.clone();
+  p1.position.set(3*SCALE+0.08,1.35,6.5*SCALE);
+  p2.position.set(4*SCALE-0.08,1.35,6.5*SCALE);
+  const top=new THREE.Mesh(new THREE.BoxGeometry(SCALE,0.5,0.4),frameMat);
+  top.position.set(3.5*SCALE,2.65,6.5*SCALE);
+  // gluzda drzwi widoczna od strony pokoju
+  const door=new THREE.Mesh(new THREE.BoxGeometry(SCALE-0.2,2.4,0.12),
+    new THREE.MeshStandardMaterial({color:0x2a5f2a,roughness:0.8,emissive:0x224422,emissiveIntensity:0.15}));
+  door.position.set(3.5*SCALE,1.2,6.5*SCALE);
+  door.castShadow=true;
+  world.add(p1,p2,top,door);
+}
+
+/* ============ SWIATLO ============ */
+scene.add(new THREE.AmbientLight(0x4a5a7a,1.1));
+const flash=new THREE.SpotLight(0xfff2d0,90,34,Math.PI/5,0.4,1.2);
+flash.position.set(0,0,0);
+flash.castShadow=true;
+flash.shadow.mapSize.set(1024,1024);
+const flashTarget=new THREE.Object3D();
+flashTarget.position.set(0,0,-1);
+camera.add(flash);
+camera.add(flashTarget);
+flash.target=flashTarget;
+world.add(camera);
+// strefa niebieskiego swiatla tła
+const bgLight=new THREE.HemisphereLight(0x3355b8,0x14142a,1.0);
+scene.add(bgLight);
+
+/* ============ TWARZE (styl modyfikacji Minecraft VERITY) ============ */
+function faceT(skin,style){
+  const c=document.createElement('canvas');c.width=c.height=128;
+  const g=c.getContext('2d');
+  g.fillStyle=skin;g.fillRect(0,0,128,128);
+  for(let y=0;y<128;y+=8)for(let x=0;x<128;x+=8){
+    g.fillStyle=`rgba(0,0,0,${Math.random()*0.14})`;
+    g.fillRect(x,y,8,8);
+  }
+  if(style==='slender'){
+    g.fillStyle='#191919';
+    g.fillRect(36,44,20,30);g.fillRect(72,44,20,28);
+  }else{
+    // VERITY: czarne jamy oczu + gigantyczny zgred z postrzępionymi zębami
+    g.fillStyle='#000';
+    g.fillRect(22,30,28,26);g.fillRect(78,32,28,28);
+    g.fillStyle='#050505';
+    g.fillRect(12,78,104,20);
+    g.fillStyle='#f2f2ea';
+    for(let i=0;i<9;i++){const h=10+Math.random()*14;g.fillRect(16+i*11,98,3,h);}
+  }
+  const t=new THREE.CanvasTexture(c);t.anisotropy=8;return t;
+}
+const fSlend=faceT('#f0ede8','slender');
+const fVerity=faceT('#6a5f6e','verity');
+
+/* ============ POTWOR ZALEZNY OD POZIOMU ============ */
+const monster=new THREE.Group();
+{
+  const black=new THREE.MeshStandardMaterial({color:0x050505,roughness:0.9});
+  const white=new THREE.MeshStandardMaterial({color:0xf5f5f5,roughness:0.7});
+  let headY=2.12;
+  if(level===1){
+    // --- SLENDER: choda czarna sylwetka + biala glowka, czerwone wystajace oczy
+    const legG=new THREE.CylinderGeometry(0.06,0.05,1.1,8);
+    const l1=new THREE.Mesh(legG,black);l1.position.set(-0.09,0.55,0);
+    const l2=new THREE.Mesh(legG,black);l2.position.set(0.09,0.55,0);
+    const body=new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.14,0.9,10),black);
+    body.position.y=1.55;
+    const tie=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.75,0.06),black);
+    tie.position.set(0,1.35,0.13);
+    const armG=new THREE.CylinderGeometry(0.05,0.04,1.3,8);
+    const a1=new THREE.Mesh(armG,black);a1.position.set(-0.26,1.45,0);a1.rotation.z=0.15;
+    const a2=new THREE.Mesh(armG,black);a2.position.set(0.26,1.45,0);a2.rotation.z=-0.15;
+    const head=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.42,0.3),[
+      new THREE.MeshStandardMaterial({color:0xf5f5f5,roughness:0.7}),
+      new THREE.MeshStandardMaterial({color:0xf5f5f5,roughness:0.7}),
+      new THREE.MeshStandardMaterial({color:0xf5f5f5,roughness:0.7}),
+      new THREE.MeshStandardMaterial({color:0xf5f5f5,roughness:0.7}),
+      new THREE.MeshStandardMaterial({map:fSlend,roughness:0.7}),
+      new THREE.MeshStandardMaterial({color:0xf5f5f5,roughness:0.7}),
+    ]);
+    head.position.y=headY;head.scale.y=1.35;
+    const eyeMat=new THREE.MeshStandardMaterial({color:0xff0000,emissive:0xff0000,emissiveIntensity:2.2,roughness:0.3});
+    const eyeGeo=new THREE.SphereGeometry(0.045,10,10);
+    const e1=new THREE.Mesh(eyeGeo,eyeMat);e1.position.set(-0.07,2.16,0.16);
+    const e2=new THREE.Mesh(eyeGeo,eyeMat);e2.position.set(0.07,2.16,0.16);
+    const eyeLight=new THREE.PointLight(0xff1111,3,4);
+    eyeLight.position.set(0,2.16,0.2);
+    monster.add(l1,l2,body,tie,a1,a2,head,e1,e2,eyeLight);
+  }else{
+    // --- VERITY: niski, szerzy, wygiety do pplusku, glowa TRYKAT jagon
+    const dark=new THREE.MeshStandardMaterial({color:0x0a0a0c,roughness:0.85});
+    const red=new THREE.MeshStandardMaterial({color:0xff2200,emissive:0xff2200,emissiveIntensity:2.5,roughness:0.4});
+    // krzywe nogi
+    const legG=new THREE.CylinderGeometry(0.11,0.07,1.0,8);
+    const l1=new THREE.Mesh(legG,dark);l1.position.set(-0.18,0.5,0);l1.rotation.x=0.35;
+    const l2=new THREE.Mesh(legG,dark);l2.position.set(0.18,0.5,0);l2.rotation.x=-0.35;
+    // szerzy puciasty tulup
+    const body=new THREE.Mesh(new THREE.SphereGeometry(0.42,14,14),dark);
+    body.position.y=1.05;body.scale.set(1.25,0.9,0.9);
+    // RECE dlugie clumnie
+    const armG=new THREE.CylinderGeometry(0.08,0.05,1.5,8);
+    const a1=new THREE.Mesh(armG,dark);a1.position.set(-0.5,1.0,0.1);a1.rotation.z=0.8;
+    const a2=new THREE.Mesh(armG,dark);a2.position.set(0.5,1.0,0.1);a2.rotation.z=-0.8;
+    // GLOWA jak w modzie VERITY: pale szarza bryla + rozgred z zębami + czarne jamy oczu
+    const skinM=new THREE.MeshStandardMaterial({color:0x6a5f6e,roughness:0.85});
+    const head=new THREE.Mesh(new THREE.BoxGeometry(0.36,0.42,0.32),[
+      skinM,skinM,
+      new THREE.MeshStandardMaterial({color:0x6a5f6e,roughness:0.85}),
+      skinM,
+      new THREE.MeshStandardMaterial({map:headVerity,roughness:0.85}),
+      skinM,
+    ]);
+    head.position.y=1.65;
+    // svedzace oczy
+    const eyeMat2=new THREE.MeshStandardMaterial({color:0xffffff,emissive:0xffffff,emissiveIntensity:1.2});
+    const we1=new THREE.Mesh(new THREE.SphereGeometry(0.04,8,8),eyeMat2);we1.position.set(-0.08,1.72,0.18);
+    const we2=new THREE.Mesh(new THREE.SphereGeometry(0.04,8,8),eyeMat2);we2.position.set(0.08,1.72,0.18);
+    const eyeLight=new THREE.PointLight(0xff2200,4,5);
+    eyeLight.position.set(0,1.65,0.2);
+    monster.add(l1,l2,body,head,eyeLight);
+    monster.add(we1,we2);
+    headY=1.65;
+  }
+}
+monster.traverse(o=>{if(o.isMesh)o.castShadow=true;});
+monster.position.set(mSpawn[0],0,mSpawn[1]);
+world.add(monster);
+let stunned=0; // czas ogtaluszenia
+
+/* ============ DUBELTOWKA 3D (przy kamerze) ============ */
+const gun=new THREE.Group();
+{
+  const steel=new THREE.MeshStandardMaterial({color:0x2a2c30,roughness:0.35,metalness:0.85});
+  const wood=new THREE.MeshStandardMaterial({color:0x6b3a1e,roughness:0.7});
+  // dwie lufy
+  const bar=G=>new THREE.Mesh(G,steel);
+  const b1=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,0.75,12),steel);
+  const b2=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,0.75,12),steel);
+  b1.rotation.x=Math.PI/2;b2.rotation.x=Math.PI/2;
+  b1.position.set(-0.035,0.055,-0.3);b2.position.set(0.035,0.055,-0.3);
+  // kolba
+  const stock=new THREE.Mesh(new THREE.BoxGeometry(0.08,0.14,0.3),wood);
+  stock.position.set(0,0.0,0.12);
+  stock.rotation.x=0.15;
+  const fore=new THREE.Mesh(new THREE.BoxGeometry(0.11,0.06,0.22),wood);
+  fore.position.set(0,0,-0.05);
+  gun.add(b1,b2,stock,fore);
+}
+gun.position.set(0.32,-0.30,-0.55);
+camera.add(gun);
+let gunCD=0,recoil=0;
+
+/* ============ OBIEKTY DO ZBIERANIA ============ */
+const bookGeo=new THREE.BoxGeometry(0.28,0.08,0.22);
+let books=[];
+const pickupsName=level>=2?'GAŚNICE':'KSIĄŻKI';
+function placeBooks(){
+  for(const b of books)world.remove(b.mesh),world.remove(b.glow);
+  books=[];
+  const spots=[];
+  for(let y=2;y<MH-2;y++)for(let x=2;x<MW-2;x++)
+    if(map[y][x]===0&&!(x<8&&y<7)&&Math.hypot(x-spawn[0]/SCALE,y-spawn[1]/SCALE)>6)spots.push([(x+.5)*SCALE,(y+.5)*SCALE]);
+  for(let i=0;i<5;i++){
+    const s=spots.splice(Math.random()*spots.length|0,1)[0];
+    if(level>=2){
+      // GAŚNICA: czerwona butla z uchwytem i dyszą
+      const g=new THREE.Group();
+      const red=new THREE.MeshStandardMaterial({color:0xcc2222,roughness:0.45,metalness:0.4});
+      const body=new THREE.Mesh(new THREE.CylinderGeometry(0.085,0.085,0.5,14),red);
+      const top=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.04,0.12,10),red);
+      top.position.y=0.31;
+      const handle=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.02,0.05),
+        new THREE.MeshStandardMaterial({color:0x222,metalness:0.8,roughness:0.4}));
+      handle.position.y=0.36;
+      const nozzle=new THREE.Mesh(new THREE.BoxGeometry(0.02,0.02,0.14),
+        new THREE.MeshStandardMaterial({color:0x181818,metalness:0.6,roughness:0.5}));
+      nozzle.position.set(0.07,0.3,0.05);
+      g.add(body,top,handle,nozzle);
+      g.rotation.y=Math.random()*3;
+      var mesh=g;
+    }else{
+      const b2=new THREE.Mesh(bookGeo,new THREE.MeshStandardMaterial({color:0x8a2222,emissive:0x661111,emissiveIntensity:0.6,roughness:0.5}));
+      b2.rotation.y=Math.random()*3;
+      var mesh=b2;
+    }
+    mesh.position.set(s[0],0.5+Math.sin(i*2)*0.02,s[1]);
+    mesh.castShadow=true;
+    const glow=new THREE.PointLight(0xffdd66,2.2,2.5);
+    glow.position.set(s[0],0.65,s[1]);
+    world.add(mesh,glow);
+    books.push({x:s[0],y:s[1],mesh,glow,got:false});
+  }
+}
+placeBooks();
+
+/* ============ STANE GRY ============ */
+let px=spawn[0],py=spawn[1],yaw=0,pitch=0;
+let booksGot=0,gameState='menu',bobPhase=0;
+const hud=document.getElementById('hud');
+const overlay=document.getElementById('overlay');
+const mmC=document.getElementById('minimap'),mmX=mmC.getContext('2d');
+function drawMinimap(){
+  const s=8; // px na komorke - cala mapa miesci sie w canvasie
+  mmX.clearRect(0,0,192,192);
+  mmX.fillStyle='#111';mmX.fillRect(0,0,192,192);
+  for(let y=0;y<MH;y++)for(let x=0;x<MW;x++){
+    if(map[y][x]===1){mmX.fillStyle='#666';}
+    else if(x<8&&y<7){mmX.fillStyle='#1c3a1c';} // pokoj spawn
+    else{mmX.fillStyle='#222';}
+    mmX.fillRect(x*s,y*s,s-1,s-1);
+  }
+  // drzwi (czerwony cegiel na komorki 3,6)
+  mmX.fillStyle='#7a3b1e';mmX.fillRect(3*s,6*s,s-1,s-1);
+  // ksiazki
+  for(const b of books)if(!b.got){
+    mmX.fillStyle='#ffcc44';
+    mmX.fillRect((b.x/SCALE-0.5)*s,(b.y/SCALE-0.5)*s,4,4);
+  }
+  // potwor (czerwony) - zawsze widoczny
+  const mHunt=monsterActive;
+  mmX.fillStyle='#000';
+  mmX.beginPath();mmX.arc(mx/SCALE*s,my/SCALE*s,4.5,0,7);mmX.fill();
+  mmX.fillStyle=mHunt?'#ff2020':'#e06060';
+  mmX.beginPath();mmX.arc(mx/SCALE*s,my/SCALE*s,3.5,0,7);mmX.fill();
+  if(mHunt){ // row czerwonych oczu
+    mmX.strokeStyle='#ff4040';mmX.lineWidth=1.5;mmX.beginPath();
+    mmX.arc(mx/SCALE*s,my/SCALE*s,6+Math.sin(performance.now()/200)*2,0,7);mmX.stroke();
+    mmX.lineWidth=1;
+  }
+  // gracz (zrodle bialym/blekitnym + kierunek patrzenia)
+  const gx=px/SCALE*s,gy=py/SCALE*s;
+  mmX.strokeStyle='#fff';mmX.beginPath();
+  mmX.moveTo(gx,gy);mmX.lineTo(gx-Math.sin(yaw)*7,gy-Math.cos(yaw)*7);mmX.stroke();
+  mmX.fillStyle='#4af';mmX.beginPath();mmX.arc(gx,gy,3,0,7);mmX.fill();
+}
+setInterval(drawMinimap,120);
+// zegar VHS
+let vhsSec=0;
+setInterval(()=>{
+  vhsSec++;
+  const h=String((vhsSec/3600)|0).padStart(2,'0'),m=String(((vhsSec/60)|0)%60).padStart(2,'0'),ss=String(vhsSec%60).padStart(2,'0');
+  const el=document.getElementById('vhsTime');if(el)el.textContent=h+':'+m+':'+ss;
+},1000);
+
+/* ============ AUDIO ============ */
+let AC=null,humGain=null,heartT=0;
+function initAudio(){
+  if(AC)return;
+  AC=new (window.AudioContext||window.webkitAudioContext)();
+  // ambient hum/mechaniczne wąkanie
+  const len=AC.sampleRate*2,b=AC.createBuffer(1,len,AC.sampleRate),d=b.getChannelData(0);
+  for(let i=0;i<len;i++)d[i]=Math.random()*2-1;
+  const src=AC.createBufferSource();src.buffer=b;src.loop=true;
+  const lp=AC.createBiquadFilter();lp.type='lowpass';lp.frequency.value=300;
+  humGain=AC.createGain();humGain.gain.value=0.05;
+  src.connect(lp);lp.connect(humGain);humGain.connect(AC.destination);src.start();
+}
+function beep(f,dur,type,vol){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.type=type;o.frequency.value=f;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+dur);
+}
+function scream(){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain(),n=AC.sampleRate*1.4;
+  o.type='sawtooth';
+  for(let i=0;i<30;i++)o.frequency.setValueAtTime(60+Math.random()*440+booksGot*40,AC.currentTime+i*1.4/30);
+  g.gain.setValueAtTime(0.7,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+1.4);
+  o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+1.5);
+}
+
+/* ============ STEROWANIE ============ */
+const keys={};
+addEventListener('click',()=>{
+  if(gameState==='won'){ // PRZEJSCIE NA NASTEPNY POZIOM
+    try{localStorage.setItem('slbr_lvl',String(level+1));}catch(e){}
+    location.reload();
+    return;
+  }
+  if(gameState!=='gra'){startGame();}
+  else if(document.pointerLockElement!==renderer.domElement)renderer.domElement.requestPointerLock();
+});
+document.addEventListener('mousemove',e=>{
+  if(document.pointerLockElement===renderer.domElement){
+    yaw-=e.movementX*0.0022;
+    pitch-=e.movementY*0.0022;
+    pitch=Math.max(-1.4,Math.min(1.4,pitch));
+  }
+});
+/* ============ STRZELANIE (PPM lub F) ============ */
+let muzzle=null;
+function shoot(){
+  if(gameState!=='gra')return;
+  if(gunCD>0)return;
+  gunCD=1.4;recoil=1;
+  // glos: wystrzal
+  if(AC){
+    const g=AC.createGain(),o=AC.createOscillator();
+    o.type='sawtooth';o.frequency.setValueAtTime(150,AC.currentTime);
+    o.frequency.exponentialRampToValueAtTime(40,AC.currentTime+0.3);
+    g.gain.setValueAtTime(0.8,AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+0.4);
+    o.connect(g);g.connect(AC.destination);o.start();o.stop(AC.currentTime+0.45);
+  }
+  // blask wystrzalu
+  const mf=new THREE.PointLight(0xffdd88,30,6);
+  mf.position.set(0.3,-0.2,-1);
+  camera.add(mf);
+  setTimeout(()=>camera.remove(mf),90);
+  // trafienie? (kat + zasieg)
+  const d2=Math.hypot(px-mx,py-my);
+  const camDir=new THREE.Vector3();camera.getWorldDirection(camDir);
+  const toM=new THREE.Vector3(mx-px,0,my-py).normalize();
+  if(d2<16&&camDir.dot(toM)>0.85){
+    stunned=3; // OGLUSZENIE NA 3 SEKUNDY
+    beep(200,0.5,'square',0.3);
+  }
+}
+addEventListener('contextmenu',e=>e.preventDefault());
+addEventListener('mousedown',e=>{
+  if(gameState==='gra'&&document.pointerLockElement===renderer.domElement&&e.button===2)shoot();
+});
+addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='KeyF')shoot();});
+addEventListener('keyup',e=>{keys[e.code]=false;});
+function startGame(){
+  px=spawn[0];py=spawn[1];yaw=0;pitch=0;
+  mx=mSpawn[0];my=mSpawn[1];aiT=0;path=[];
+  monsterActive=false;stunned=0;gunCD=0;recoil=0;
+  booksGot=0;hud.textContent='POZIOM '+level+' | KSIĄŻKI: 0 / 5';
+  placeBooks();gameState='gra';initAudio();
+  if(AC&&AC.state==='suspended')AC.resume();
+  renderer.domElement.requestPointerLock();
+  overlay.style.display='none';
+  document.getElementById('scare').style.display='none';
+}
+
+/* ============ AI POTWORA (BFS) ============ */
+let aiT=0,mx=mSpawn[0],my=mSpawn[1],path=[];
+function bfs(sx,sy,tx,ty){
+  sx=mx/SCALE;sy=my/SCALE;tx=px/SCALE;ty=py/SCALE;
+  const cellCoord=v=>Math.max(0,Math.min(MH-1,v|0));
+  let tcol=cellCoord(tx),trow=cellCoord(ty);
+  // POCZWAR W SPWNIE -> czyha przed drzwiami (komorka za drzwiami)
+  if(tcol>=0&&tcol<=7&&trow>=0&&trow<=6){tcol=3;trow=7;}
+  const s0=cellCoord(sy)*MW+cellCoord(sx),t0=trow*MW+tcol;
+  if(s0===t0){path=[];return;}
+  const prev=new Int32Array(MW*MH).fill(-1);
+  prev[s0]=s0;const q=[s0];let qi=0;
+  while(qi<q.length){
+    const c=q[qi++];
+    if(c===t0)break;
+    const cx=c%MW,cy=(c/MW)|0;
+    for(const[dx,dy]of[[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=cx+dx,ny=cy+dy,n=ny*MW+nx;
+      // nie wchodzi do pokoju spawn (zostaje szow na zewnatrz)
+      if(nx<8&&ny<7)continue;
+      if(!cellWall(nx,ny)&&prev[n]<0){prev[n]=c;q.push(n);}
+    }
+  }
+  if(prev[t0]<0)return;
+  path=[];let c=t0;
+  while(c!==s0){path.push([(c%MW+.5)*SCALE,((c/MW|0)+.5)*SCALE]);c=prev[c];}
+  path.reverse();
+}
+function moveMonster(dt){
+  // OGLUSZONY - stoi i szwankuje
+  if(stunned>0){
+    stunned-=dt;
+    monster.rotation.z=Math.sin(performance.now()/30)*0.12*stunned; // kręci się jak ogłuszony
+    return;
+  }
+  monster.rotation.z=0;
+  const spd=(1.8+booksGot*0.4)*SCALE*0.7;
+  aiT-=dt;
+  if(aiT<=0){aiT=0.4;bfs(mx,my,px,py);}
+  // kolizje ze scianami: ruch na kazdej osi osobno
+  const r=0.45;
+  const free=(x,y)=>!isWall(x-r,y-r)&&!isWall(x+r,y-r)&&!isWall(x-r,y+r)&&!isWall(x+r,y+r);
+  const step=spd*dt;
+  if(path.length){
+    const[tx,ty]=path[0];
+    const dx=tx-mx,dy=ty-my,d=Math.hypot(dx,dy);
+    if(d<0.3)path.shift();
+    else{
+      const vx=dx/d*step,vy=dy/d*step;
+      if(free(mx+vx,my))mx+=vx;
+      if(free(mx,my+vy))my+=vy;
+    }
+  }else{
+    const dx=px-mx,dy=py-my,d=Math.hypot(dx,dy)||1;
+    const vx=dx/d*step,vy=dy/d*step;
+    if(free(mx+vx,my))mx+=vx;
+    if(free(mx,my+vy))my+=vy;
+  }
+  monster.position.set(mx,0,my);
+  // patrzy na gracza
+  monster.rotation.y=Math.atan2(px-mx,py-my);
+  // slinky: sylwetka lekko sie buja
+  monster.children.forEach((c,i)=>c.position.y+=Math.sin(performance.now()/200+i)*0.001);
+}
+
+/* ============ RUCH GRACZA ============ */
+function canMove(x,y){
+  const r=0.28;
+  return !isWall(x-r,y-r)&&!isWall(x+r,y-r)&&!isWall(x-r,y+r)&&!isWall(x+r,y+r);
+}
+function updatePlayer(dt){
+  const spd=(keys['ShiftLeft']?4.6:3.4)*dt;
+  let fw=0,st=0;
+  const s=Math.sin(yaw),c=Math.cos(yaw);
+  if(keys['KeyW'])fw+=1;
+  if(keys['KeyS'])fw-=1;
+  if(keys['KeyA'])st+=1;
+  if(keys['KeyD'])st-=1;
+  if(keys['ArrowLeft'])yaw+=2.4*dt;
+  if(keys['ArrowRight'])yaw-=2.4*dt;
+  // przod = dokad patrzy kamera: (-sin,-cos); prawo = (cos,-sin)
+  let vx=-s*fw+c*st,vy=-c*fw-s*st;
+  const m=Math.hypot(vx,vy);
+  if(m>0){
+    vx=vx/m*spd;vy=vy/m*spd;
+    if(canMove(px+vx,py))px+=vx;
+    if(canMove(px,py+vy))py+=vy;
+    bobPhase+=dt*9;
+  }else bobPhase*=0.9;
+}
+
+/* ============ OVERLAY / EKRANY ============ */
+function die(){
+  gameState='dead';scream();
+  const sc=document.getElementById('scare');
+  sc.style.display='flex';
+  sc.style.background='#000';
+  sc.innerHTML='';
+  const tw=document.createElement('div');
+  tw.style.cssText='width:60%;height:60%;background:#fff;border-radius:50%;filter:blur(1px);position:relative';
+  // oczy z passiert
+  tw.innerHTML='<div style="position:absolute;width:12%;height:6%;background:#000;top:38%;left:20%"></div><div style="position:absolute;width:12%;height:6%;background:#000;top:38%;right:20%"></div>';
+  sc.appendChild(tw);
+  setTimeout(()=>{ // mrużnięcie
+    tw.style.transition='all 0.1s';tw.style.transform='scale(1.4)';
+  },300);
+  overlay.className='';
+  overlay.classList.remove('ok');
+  overlay.innerHTML='<b>DOPADŁ CIĘ</b>Zebrałeś: '+booksGot+' / 5<br><br>-- KLIKNij, aby zagrać ponownie --';
+  overlay.style.display='flex';
+  if(document.pointerLockElement)document.exitPointerLock();
+}
+function win(){
+  gameState='won';beep(660,0.6,'square',0.3);
+  const nextName=level>=2?'VERITY':'SLENDER';
+  const nextLvl=PAL[(level)%PAL.length];
+  overlay.className='ok';
+  overlay.innerHTML=`<b style="color:#0f0">POZIOM ${level} UKŃCZONY!</b> Na następnym jest <b>${nextName}</b>,<br>szersze korytarze i inne sciany.<br><br>-- Kliknij, aby wejść na POZIOM ${level+1} --`;
+  overlay.style.display='flex';
+  if(document.pointerLockElement)document.exitPointerLock();
+}
+overlay.className='';
+overlay.innerHTML='<b style="font-size:52px;color:#fff;text-shadow:0 0 30px #fff">SLENDR.BR 3D - POZIOM '+level+'</b>'+(level>=2?'Potwor na tym poziomie: <b style="color:#f43">VERITY</b><br>':'')+'zbierz 5 ksiazek. Jak wrocisz na spawn - potwor odpada.<br>WASD = ruch | mysz = rozglądanie | SHIFT = bieg | PPM/F = dubeltówka<br><br>-- KLIKNIJ, ABY ZACZĄĆ --';
+overlay.style.display='flex';
+
+/* ============ PĘTLA ============ */
+let lastT=performance.now();
+function loop(t){
+requestAnimationFrame(loop);
+window.onerror=function(m,s,l){
+  try{localStorage.removeItem('slbr_lvl');}catch(e){}
+  const ov=document.getElementById('overlay');
+  ov.style.display='flex';
+  ov.style.background='#200';
+  ov.innerHTML='<b style="font-size:40px">BLAD GRY</b>'+m+'<br>(linie '+l+')<br>Odswiez strone (Ctrl+F5). Postep zresetowany.';
+};
+  const dt=Math.min((t-lastT)/1000,0.05);lastT=t;
+  if(gameState==='gra'){
+    updatePlayer(dt);
+    // AKTYWACJA POTWORA: przekroczenie drzwi (wyjscie z pokoju spawn)
+    if(!monsterActive&&py/SCALE>6.4){
+      monsterActive=true;
+      hud.textContent='UCIEKAJ!';
+      // przestrach
+      beep(90,1.2,'sawtooth',0.5);
+      setTimeout(()=>{beep(70,1.5,'sawtooth',0.4);},600);
+    }
+    if(monsterActive){
+      moveMonster(dt);
+    }else{
+      // potwor stoi w ciemnosci i kreci sie powoli
+      monster.rotation.y+=dt*0.3;
+      monster.rotation.z=Math.sin(performance.now()/900)*0.03;
+    }
+    // zbieranie
+    for(const b of books){
+      if(!b.got&&Math.hypot(px-b.x,py-b.y)<0.9){
+        b.got=true;
+        world.remove(b.mesh);world.remove(b.glow);
+        booksGot++;hud.textContent='POZIOM '+level+' | KSIĄŻKI: '+booksGot+' / 5';
+        beep(500+booksGot*40,0.45,'square',0.3);
+        if(booksGot>=5){win();break;}
+      }
+    }
+    // pozycja kamery
+    const bob=Math.abs(Math.sin(bobPhase))*0.06;
+    camera.position.set(px,1.62+bob,py);
+    camera.rotation.set(0,0,0);camera.rotateY(yaw);camera.rotateX(pitch);
+    // odrzut dubeltowki + cooldown
+    gunCD=Math.max(0,gunCD-dt);
+    recoil=Math.max(0,recoil-dt*4);
+    gun.position.z=-0.55+recoil*0.25;
+    gun.rotation.x=recoil*0.5;
+    gun.visible=true;
+    // smiertelny dotyk (tylko gdy aktywny i nie ogłuszony)
+    if(monsterActive&&stunned<=0&&Math.hypot(px-mx,py-my)<0.6*SCALE*0.9)die();
+    // włączenie strachu: potwor w polu widzenia
+    const camDir=new THREE.Vector3();camera.getWorldDirection(camDir);
+    const toM=new THREE.Vector3(mx-px,0,my-py).normalize();
+    const look=camDir.dot(toM);
+    if(look>0.9&&Math.hypot(px-mx,py-my)<14){
+      // zaraz! potwor patrzy - lekka trzeska
+      camera.position.x+=Math.sin(t/50)*(look-0.9)*0.015;
+    }
+    // ambient/statik
+    const d2=Math.hypot(px-mx,py-my);
+    if(humGain){
+      humGain.gain.value=0.04+Math.max(0,0.25/(d2*d2*0.4+0.8));
+      // clang? heartbeat
+      heartT-=dt;
+      if(d2<6&&heartT<=0){
+        heartT=Math.max(0.35,d2/6);
+        beep(55,0.12,'sine',Math.min(0.5,0.5/(d2*0.5)));
+      }
+    }
+  }
+  if(gameState==='gra'||gameState==='dead')renderer.render(scene,camera);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

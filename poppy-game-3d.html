@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Poppy Escape - Playtime Co.</title>
+<style>
+  body { margin:0; background:#000; overflow:hidden; font-family:monospace; }
+  canvas { display:block; width:100vw; height:100vh; image-rendering:pixelated; cursor:crosshair; }
+  #hud { position:fixed; top:10px; left:10px; color:#ffd94a; font-size:18px; text-shadow:0 0 6px #000; }
+  #msg { position:fixed; top:38%; width:100%; text-align:center; color:#fff; font-size:36px; text-shadow:0 0 12px #000; }
+  #vign { position:fixed; inset:0; pointer-events:none; background:radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.85) 100%); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="vign"></div>
+<div id="hud"></div>
+<div id="msg"></div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const RW = 480, RH = 300;          // wewnętrzna rozdzielczość (shery)
+canvas.width = RW; canvas.height = RH;
+const msg = document.getElementById('msg'), hud = document.getElementById('hud');
+
+// ---------- MAPA: Playtime Co. ----------
+const MAP = [
+"1111111122222222222111111111112222",
+"1S..1........2......1.....1.....2E1",
+"1.1.1.2222.1.1.222.1.2.1.1.222.1.21",
+"1.1...1...1.1.1.1...1.2.1.1.3.1.2.1",
+"1.1111.1.1.3.1.1.2221.2.1.1.1.1.221",
+"1.....1.1...1.1.......2.1.1.3...2.1",
+"111.1.1.11111.1.2222.2.1.1.1112.1.1",
+"3T...1.2....T...1...3.2.1.2..T3.1.1",
+"3.1111.2222.222.1.1.1.2.1.11.1.2..1",
+"3.1.....1...1...1.1.1.2.1..1.1.2111",
+"2.1.22.1.1.1.2221.1.1.2.1.22.1...21",
+"2.1.1.....1.1...1.1...2.1.....T..21",
+"2.1.1.111.1.1.1111.1111.11111.11.21",
+"3...1.1...1.1.....1.....1...1.3.2.1",
+"1.111.1.111.1.22.1.11122.1.1.1.2.21",
+"1.3...1.1.....1..1.....1.1.1.1.2..1",
+"1.1.1.1.1.222.1..11122.1.1.1.1.21.1",
+"1.1.1...1.......T........1.1...3..1",
+"1...22.1.2...M...2...2221.1.1.1.1.1",
+"11111111222222222222222211111111111"
+];
+const W = MAP[0].length, H = MAP.length;
+const isWall = (x,y) => { const c = (MAP[Math.floor(y)]||'')[Math.floor(x)]; return c>='0' && c<='9'; };
+const wallChar = (mx,my) => (MAP[my] && MAP[my][mx]) || '1';
+
+// --- POSZERZANIE KORYTARZY ---
+// usuwamy część wewnętrznych ścian (deterministycznie), dzięki czemu powstają szerokie sale
+const MAPW = MAP.map(r=>r.split(''));
+for(let y=2;y<H-2;y++) for(let x=2;x<W-2;x++){
+  const c=MAP[y][x];
+  if(c>='1'&&c<='9'){
+    const h=((x*2654435761 ^ y*668265263)>>>0);
+    if(h%7<3) MAPW[y][x]='.';   // ~43% ścian wewnętrznych usuwamy -> otwarte przestrzenie
+  }
+}
+const MAPREADY = MAPW.map(r=>r.join(''));
+for(let i=0;i<H;i++) MAP[i]=MAPREADY[i];
+
+// deterministyczny wybór tekstury dla danej ściany (różnorodność!)
+function texFor(mx,my,c){
+  if(c==='E') return 'E';
+  const h=((mx*2654435761 ^ my*40503 + c.charCodeAt(0)*919)>>>0);
+  const v=h%4;
+  if(v===0) return '4';               // płytki
+  if(v===1) return '5';               // beton z plamami
+  return c;                            // oryginalny motyw (cegła / PLAYTIME CO. / niebieski)
+}
+
+// ---------- TEKSTURY (proceduralne, Playtime Co. style) ----------
+function makeTex(fn, w=64, h=64){ const c=document.createElement('canvas'); c.width=w; c.height=h; fn(c.getContext('2d'),w,h); return c; }
+const TEX = {};
+// ściana: czerwona cegła
+TEX['1'] = makeTex((g,w,h)=>{
+  g.fillStyle='#5a1f22'; g.fillRect(0,0,w,h);
+  for(let y=0;y<h;y+=8){ const off=(y/8)%2?8:0;
+    for(let x=-8;x<w;x+=16){ g.fillStyle=`hsl(${355+Math.random()*10},45%,${22+Math.random()*8}%)`;
+      g.fillRect(x+off, y, 15, 7);
+      g.fillStyle='rgba(0,0,0,.35)'; g.fillRect(x+off, y+7, 15, 1); g.fillRect(x+off+15, y, 1, 7);
+    } }
+  for(let i=0;i<50;i++){ g.fillStyle='rgba(0,0,0,.15)'; g.fillRect(Math.random()*w, Math.random()*h, 2, 2); }
+});
+// ściana: pasy + napis PLAYTIME CO.
+TEX['2'] = makeTex((g,w,h)=>{
+  g.fillStyle='#c9a24a'; g.fillRect(0,0,w,h);
+  g.fillStyle='#b58c2e'; for(let x=0;x<w;x+=12) g.fillRect(x,0,6,h);
+  g.fillStyle='#8a2b2e'; g.fillRect(0, h*0.72, w, h*0.13);
+  g.fillStyle='#f3e2b8'; g.font='bold 11px monospace'; g.textAlign='center';
+  g.fillText('PLAYTIME', w/2, h*0.42); g.fillText('CO.', w/2, h*0.56);
+  g.fillStyle='rgba(0,0,0,.25)'; g.fillRect(0,0,w,2); g.fillRect(0,h-2,w,2);
+  for(let i=0;i<25;i++){ g.fillStyle='rgba(0,0,0,.12)'; g.fillRect(Math.random()*w, Math.random()*h, 2,1); }
+});
+// ściana: niebieska
+TEX['3'] = makeTex((g,w,h)=>{
+  g.fillStyle='#1e3a6e'; g.fillRect(0,0,w,h);
+  for(let y=0;y<h;y+=10){ const off=(y/10)%2?10:0;
+    for(let x=-10;x<w;x+=20){ g.fillStyle=`hsl(${225+Math.random()*10},50%,${18+Math.random()*7}%)`; g.fillRect(x+off,y,19,9); } }
+});
+// ściana: płytki
+TEX['4'] = makeTex((g,w,h)=>{
+  g.fillStyle='#d8cdb8'; g.fillRect(0,0,w,h);
+  for(let y=0;y<h;y+=16) for(let x=0;x<w;x+=16){
+    g.fillStyle=`hsl(${30+Math.random()*14},35%,${72+Math.random()*10}%)`; g.fillRect(x+1,y+1,14,14);
+    g.strokeStyle='#9c8c72'; g.strokeRect(x+1,y+1,14,14);
+  }
+});
+// ściana: beton z plamami i mchem
+TEX['5'] = makeTex((g,w,h)=>{
+  g.fillStyle='#6f6f74'; g.fillRect(0,0,w,h);
+  for(let i=0;i<70;i++){ g.fillStyle=`rgba(${Math.random()<.5?0:255},0,0,.06)`; g.fillRect(Math.random()*w,Math.random()*h,Math.random()*10,Math.random()*4); }
+  for(let i=0;i<45;i++){ g.fillStyle='rgba(20,70,30,.25)'; g.beginPath(); g.arc(Math.random()*w,Math.random()*h,Math.random()*5,0,7); g.fill(); }
+  g.fillStyle='rgba(0,0,0,.3)'; g.fillRect(0,h-4,w,4);
+});
+// podłoga: szare płytki
+TEX.floor = makeTex((g,w,h)=>{
+  g.fillStyle='#2b2b30'; g.fillRect(0,0,w,h);
+  g.fillStyle='#34343b'; g.fillRect(0,0,w/2,h/2); g.fillRect(w/2,h/2,w/2,h/2);
+  g.strokeStyle='#17171b'; for(let y=0;y<=h;y+=32){ g.beginPath(); g.moveTo(0,y); g.lineTo(w,y); g.stroke(); g.beginPath(); g.moveTo(y,0); g.lineTo(y,w); g.stroke(); }
+});
+// sufit
+TEX.ceil = makeTex((g,w,h)=>{
+  g.fillStyle='#14131a'; g.fillRect(0,0,w,h);
+  for(let i=0;i<40;i++){ g.fillStyle='rgba(255,255,255,.03)'; g.fillRect(Math.random()*w,Math.random()*h,3,1); }
+  g.fillStyle='#3a2f10'; g.fillRect(w/2-3,h/2-3,6,6);
+});
+
+// ---------- STAN ----------
+let px,py, dirX,dirY, planeX,planeY, toys, state, flicker=0, mBlinks=0;
+let keys={}, mouse={grabbed:false};
+const FOV = 80 * Math.PI / 180;
+
+function reset(){
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(MAP[y][x]==='S'){ px=x+.5; py=y+.5; }
+  dirX=1; dirY=0; planeX=0; planeY=Math.tan(FOV/2);
+  toys=[]; for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(MAP[y][x]==='T') toys.push({x:x+.5,y:y+.5,got:false});
+  window.monster={x:16.5,y:18.2};
+  state='play'; score(); msg.textContent='';
+}
+const score = () => hud.textContent = '🧸 Zabawki: '+toys.filter(t=>t.got).length+'/'+toys.length;
+
+canvas.addEventListener('click', ()=> canvas.requestPointerLock());
+document.addEventListener('pointerlockchange', ()=> mouse.grabbed = document.pointerLockElement===canvas);
+document.addEventListener('mousemove', e=>{ if(mouse.grabbed){
+  const a=Math.atan2(dirY,dirX)+e.movementX*0.0028; dirX=Math.cos(a); dirY=Math.sin(a);
+}});
+addEventListener('keydown', e=> keys[e.code]=1);
+addEventListener('keyup', e=> delete keys[e.code]);
+
+function update(dt){
+  if(keys.KeyR && state!=='play'){ reset(); return; }
+  if(state!=='play') return;
+  let sp=2.4*dt; if(keys.ShiftLeft) sp*=1.7;
+  let mvx=0,mvy=0;
+  if(keys.KeyW||keys.ArrowUp){ mvx+=dirX; mvy+=dirY; }
+  if(keys.KeyS||keys.ArrowDown){ mvx-=dirX; mvy-=dirY; }
+  if(keys.KeyA){ mvx+=dirY; mvy-=dirX; }
+  if(keys.KeyD){ mvx-=dirY; mvy+=dirX; }
+  if(keys.ArrowLeft){ const a=Math.atan2(dirY,dirX)-2.2*dt; dirX=Math.cos(a); dirY=Math.sin(a); }
+  if(keys.ArrowRight){ const a=Math.atan2(dirY,dirX)+2.2*dt; dirX=Math.cos(a); dirY=Math.sin(a); }
+  const len=Math.hypot(mvx,mvy);
+  if(len){ mvx/=len; mvy/=len;
+    if(!isWall(px+mvx*sp,py)) px+=mvx*sp;
+    if(!isWall(px,py+mvy*sp)) py+=mvy*sp;
+  }
+  for(const t of toys) if(!t.got && Math.hypot(t.x-px,t.y-py)<0.55){ t.got=true; score(); }
+  const c = MAP[Math.floor(py)][Math.floor(px)];
+  if(c==='E'){
+    if(toys.every(t=>t.got)){ state='win'; msg.textContent='UCIEKŁEŚ Z FABRYKI! (R = restart)'; }
+    else msg.textContent='Zbierz wszystkie zabawki, żeby uciec!';
+  } else if(msg.textContent.startsWith('Zbierz')) msg.textContent='';
+
+  const m=window.monster, spd=1.15 + toys.filter(t=>t.got).length*0.16;
+  moveMonster(m, spd*dt);
+  const d=Math.hypot(m.x-px,m.y-py);
+  mBlinks = d<5 ? 1 : 0;
+  if(d<0.55){ state='lost'; msg.textContent='HUGGY WUGGY CIĘ ZŁAPAŁ! (R = restart)'; }
+}
+
+function moveMonster(m, dist){
+  const sx=Math.floor(m.x), sy=Math.floor(m.y), tx=Math.floor(px), ty=Math.floor(py);
+  const q=[[sx,sy]], prev={}, seen={}; seen[sx+','+sy]=1;
+  outer: while(q.length){
+    const [x,y]=q.shift();
+    if(x===tx&&y===ty) break outer;
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy, k=nx+','+ny;
+      if(!isWall(nx+.5,ny+.5)&&!seen[k]){ seen[k]=1; prev[k]=x+','+y; q.push([nx,ny]); }
+    }
+  }
+  let cx=tx+','+ty, path=[];
+  if(seen[cx]) while(cx&&cx!==sx+','+sy){ path.unshift(cx.split(',').map(Number)); cx=prev[cx]; }
+  while(dist>0&&path.length){
+    const [gx,gy]=path[0], d=Math.hypot(gx+.5-m.x,gy+.5-m.y);
+    if(d<=dist){ m.x=gx+.5; m.y=gy+.5; path.shift(); dist-=d; }
+    else { m.x+=(gx+.5-m.x)/d*dist; m.y+=(gy+.5-m.y)/d*dist; dist=0; }
+  }
+}
+
+function fog(dist){ return Math.max(0.02, 1 - dist/12); }
+
+function render(t){
+  ctx.fillStyle='#020204'; ctx.fillRect(0,0,RW,RH);
+  flicker = 0.92 + Math.sin(t*0.013)*0.04 + (Math.random()<0.012 ? -0.35 : 0);
+  const h=RH;
+  // sufit
+  const cg = ctx.createLinearGradient(0,0,0,h/2);
+  cg.addColorStop(0,`rgba(${30*flicker},${28*flicker},${38*flicker},1)`);
+  cg.addColorStop(1,'rgba(8,8,10,1)');
+  ctx.fillStyle=cg; ctx.fillRect(0,0,RW,h/2);
+  // podłoga
+  const fg = ctx.createLinearGradient(0,h/2,0,h);
+  fg.addColorStop(0,'rgba(6,6,8,1)');
+  fg.addColorStop(1,`rgba(${44*flicker},${40*flicker},${30*flicker},1)`);
+  ctx.fillStyle=fg; ctx.fillRect(0,h/2,RW,h/2);
+
+  // ŚCIANY z teksturą
+  const zbuf=[];
+  for(let col=0; col<RW; col++){
+    const cam=2*col/RW-1;
+    const rdx=dirX+planeX*cam, rdy=dirY+planeY*cam;
+    let mapX=Math.floor(px), mapY=Math.floor(py);
+    const ddx=Math.abs(1/rdx), ddy=Math.abs(1/rdy);
+    let stepX,stepY,sdx,sdy,side=0;
+    if(rdx<0){stepX=-1; sdx=(px-mapX)*ddx;} else {stepX=1; sdx=(mapX+1-px)*ddx;}
+    if(rdy<0){stepY=-1; sdy=(py-mapY)*ddy;} else {stepY=1; sdy=(mapY+1-py)*ddy;}
+    let ch='#';
+    for(let i=0;i<120;i++){
+      if(sdx<sdy){ sdx+=ddx; mapX+=stepX; side=0; } else { sdy+=ddy; mapY+=stepY; side=1; }
+      ch=wallChar(mapX,mapY);
+      if(ch>='1') break;
+    }
+    const dist=Math.max(0.05, side?sdy-ddy:sdx-ddx);
+    zbuf[col]=dist;
+    const lineH=h/dist, y0=(h-lineH)/2;
+    const tex=TEX[texFor(mapX,mapY,ch)]|| (ch==='E'?null:TEX['1']) || TEX['1'];
+    let wx = side===0 ? py+dist*rdy : px+dist*rdx; wx-=Math.floor(wx);
+    let texX=Math.floor(wx*64); if(side===0&&rdx>0) texX=63-texX; if(side===1&&rdy<0) texX=64-texX;
+    ctx.drawImage(tex, texX,0,1,64, col,y0,1.2,lineH);
+    ctx.fillStyle=`rgba(0,0,0,${1-fog(dist)})`;
+    ctx.fillRect(col,y0,1.2,lineH);
+  }
+
+  // SPRITES
+  const inv=1/(planeX*dirY-dirX*planeY);
+  const dS=(wx,wy,size,fn,glow)=>{
+    const dx=wx-px, dy=wy-py;
+    const tx=inv*(-dirY*dx+dirX*dy), ty=inv*(-planeY*dx+planeX*dy);
+    if(ty<=0.15||ty>20) return;
+    const sx=RW/2*(1+tx/ty), sh=Math.abs(h/ty)*size;
+    if(sx>0&&sx<RW&&(zbuf[Math.floor(sx)]||0)>ty){
+      ctx.save(); ctx.translate(sx,h/2+sh/2); ctx.scale(sh/128,sh/128); ctx.globalAlpha=Math.min(1,fog(ty)*1.8);
+      fn(t);
+      ctx.restore();
+    }
+  };
+  for(const toy of toys){ if(!toy.got) continue;
+    dS(toy.x,toy.y,0.32,(t2)=>{
+      ctx.fillStyle='#ffd94a'; ctx.beginPath(); ctx.arc(0,-10,42,0,7); ctx.fill();
+      ctx.beginPath(); ctx.arc(-32,-52,15,0,7); ctx.arc(32,-52,15,0,7); ctx.fill();
+      ctx.fillStyle='#8a2b2e'; ctx.fillRect(-34,-6,68,10);
+    });
+  }
+  dS(window.monster.x, window.monster.y, 0.62, (t2)=>{
+    const puff=1+0.04*Math.sin(t2*0.006);
+    ctx.scale(puff,puff);
+    ctx.fillStyle='#7a1c8f'; ctx.beginPath(); ctx.arc(0,-18,55,0,7); ctx.fill();
+    ctx.fillRect(-42,18,84,40);
+    ctx.fillStyle='#ff3b3b'; ctx.fillRect(-30,-42,17,22); ctx.fillRect(13,-42,17,22);
+    ctx.fillStyle='#fff'; ctx.font='bold 20px monospace'; ctx.textAlign='center';
+    ctx.fillText('>:)',0,-6);
+  }, true);
+}
+
+let last=0;
+function loop(t){ update(0.016); render(t); requestAnimationFrame(loop); }
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

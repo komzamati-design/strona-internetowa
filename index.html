@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Krowa – Strona o krowie 🐄</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(180deg, #aee1f9 0%, #8fd14f 100%);
+    min-height: 100vh;
+    color: #333;
+  }
+  header {
+    background: rgba(255,255,255,.85);
+    padding: 2rem 1rem;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,.1);
+  }
+  h1 { font-size: 2.5rem; }
+  .cow-emoji { font-size: 4rem; display: block; margin-bottom: .5rem; }
+  main { max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+  section {
+    background: rgba(255,255,255,.9);
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 3px 10px rgba(0,0,0,.08);
+  }
+  h2 { color: #2e7d32; margin-bottom: .8rem; border-bottom: 2px dashed #8fd14f; padding-bottom: .3rem; }
+  ul { list-style: none; }
+  li { padding: .4rem 0; }
+  li::before { content: "🐄 "; }
+  .fun-fact { background: #fff8dc; border-left: 5px solid #f0c419; }
+  footer {
+    text-align: center;
+    padding: 1.5rem;
+    color: #fff;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0,0,0,.3);
+  }
+  .moo-btn {
+    display: block;
+    margin: 1rem auto 0;
+    font-size: 1.2rem;
+    padding: .8rem 2rem;
+    border: none;
+    border-radius: 50px;
+    background: #2e7d32;
+    color: #fff;
+    cursor: pointer;
+    transition: transform .15s;
+  }
+  .moo-btn:hover { transform: scale(1.08); background: #1b5e20; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: .6rem; text-align: left; border-bottom: 1px solid #ddd; }
+  th { background: #e8f5e9; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="cow-emoji">🐄</span>
+  <h1>Wszystko o krowie</h1>
+  <p>Strona poświęcona najspokojniejszemu zwierzakowi na świecie</p>
+</header>
+
+<main>
+  <section>
+    <h2>Kim jest krowa?</h2>
+    <p>Krowa to samica bydła domowego (<em>Bos taurus</em>) – dużego zwierzęcia hodowlanego z rodziny krętorogich. Hodowana jest głównie dla mleka, mięsa i skór. Może ważyć od 400 do nawet 900 kg!</p>
+  </section>
+
+  <section class="fun-fact">
+    <h2>Ciekawostki</h2>
+    <ul>
+      <li>Krowa ma około 25 000 kubków smakowych – 2,5 razy więcej niż człowiek!</li>
+      <li>Po krowie, która dobrze się pasie, mleko można pozyskiwać nawet 10 lat.</li>
+      <li>Krowy mają doskonałe widzenie prawie dookoła – prawie 360 stopni.</li>
+      <li>Krowa dziennie przeżuwa nawet 8 godzin.</li>
+      <li>Największy „moo” krowy można usłyszeć z odległości kilku kilometrów.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Podstawowe informacje</h2>
+    <table>
+      <tr><th>Cecha</th><th>Opis</th></tr>
+      <tr><td>Waga</td><td>400–900 kg</td></tr>
+      <tr><td>Życie</td><td>15–20 lat (rekordowo ponad 40!)</td></tr>
+      <tr><td>Pożywienie</td><td>Trawa, siano, pasza</td></tr>
+      <tr><td>Mleko</td><td>Nawet 30 litrów dziennie</td></tr>
+      <tr><td>Dźwięk</td><td>MuUUU! 🐮</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Kliknij krowę!</h2>
+    <button class="moo-btn" onclick="moo()">Muuuu! 🐄</button>
+    <p id="counter" style="text-align:center; margin-top:.8rem;">Kliknięć: 0</p>
+    <a class="moo-btn" style="background:#1565c0; text-decoration:none; display:inline-block;" href="gra.html">🎮 Zagraj: Łap Krowę lub Siusiaka!</a>
+    <a class="moo-btn" style="background:#b71c1c; text-decoration:none; display:inline-block;" href="potwor.html">👹 Ucieczka przed Potworem!</a>
+    <a class="moo-btn" style="background:#f9a825; text-decoration:none; display:inline-block;" href="escape-cheese.html">🧀 Escape Cheese!</a>
+  </section>
+</main>
+
+<footer>Mu! 🐄 © 2026 Strona o krowie</footer>
+
+<script>
+  let n = 0;
+  function moo() {
+    n++;
+    document.getElementById("counter").textContent = "Kliknięć: " + n;
+    if (n % 5 === 0) alert("MUUUU! 🐮");
+  }
+</script>
+
+</body>
+</html>

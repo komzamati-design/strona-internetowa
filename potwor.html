@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ucieczka przed Potworem 👹</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; overflow: hidden; user-select: none; background: #000; }
+  #game { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  #hud {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    color: #fff; font-size: 1.2rem; font-weight: bold;
+    background: rgba(0,0,0,.5); padding: .5rem 1.5rem; border-radius: 50px;
+    display: flex; gap: 2rem; z-index: 5; pointer-events: none;
+  }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.85);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #fff; text-align: center; z-index: 10;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h2 { font-size: 2.5rem; margin-bottom: 1rem; }
+  #overlay button {
+    font-size: 1.3rem; padding: 1rem 2.5rem; border: none; border-radius: 50px;
+    background: #b71c1c; color: #fff; cursor: pointer; margin-top: 1rem;
+  }
+  #overlay button:hover { background: #7f0000; transform: scale(1.05); }
+  #damage { position: fixed; inset: 0; background: rgba(255,0,0,.4); opacity: 0; pointer-events: none; z-index: 8; transition: opacity .2s; }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+<div id="hud">
+  <span>⏱ Przetrwane: <span id="time">0</span>s</span>
+  <span>👹 Odległość: <span id="dist">?</span></span>
+</div>
+<div id="damage"></div>
+<div id="overlay">
+  <h2>👹 UCIEKAJ!</h2>
+  <p>WSAD/A-D – ruch, myszka – rozglądanie się.<br>Potwór się ściga. Przetrwaj jak najdłużej!</p>
+  <div style="font-size:3rem">↓</div>
+  <button id="startBtn">Start!</button>
+</div>
+
+<script>
+const W = 34, H = 26, CELL = 64;
+let grid = [];
+
+function isWall(x, y) {
+  const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
+  if (cx < 0 || cy < 0 || cx >= W || cy >= H) return true;
+  return grid[cy][cx] === "#";
+}
+
+function freeCell(cx, cy) {
+  return cx > 0 && cy > 0 && cx < W - 1 && cy < H - 1 && grid[cy][cx] === ".";
+}
+
+function freeSpot() {
+  while (true) {
+    const x = (Math.random() * (W - 2) + 1) * CELL + CELL / 2;
+    const y = (Math.random() * (H - 2) + 1) * CELL + CELL / 2;
+    if (!isWall(x, y)) return { x, y };
+  }
+}
+
+function randomSpotInRoom(r) {
+  const cx = r.x + Math.floor(Math.random() * r.w);
+  const cy = r.y + Math.floor(Math.random() * r.h);
+  return { x: (cx + 0.5) * CELL, y: (cy + 0.5) * CELL };
+}
+
+function generateMap() {
+  grid = Array.from({ length: H }, () => Array(W).fill("#"));
+  const rooms = [];
+  const target = 9;
+
+  for (let tries = 0; tries < 300 && rooms.length < target; tries++) {
+    const rw = 4 + Math.floor(Math.random() * 5);
+    const rh = 4 + Math.floor(Math.random() * 4);
+    const rx = 1 + Math.floor(Math.random() * (W - rw - 2));
+    const ry = 1 + Math.floor(Math.random() * (H - rh - 2));
+    const r = { x: rx, y: ry, w: rw, h: rh, cx: rx + rw / 2 - 0.5, cy: ry + rh / 2 - 0.5 };
+    const overlaps = rooms.some(o =>
+      rx - 1 < o.x + o.w + 1 && rx + rw + 1 > o.x - 1 &&
+      ry - 1 < o.y + o.h + 1 && ry + rh + 1 > o.y - 1);
+    if (overlaps) continue;
+    for (let y = ry; y < ry + rh; y++)
+      for (let x = rx; x < rx + rw; x++)
+        grid[y][x] = ".";
+    rooms.push(r);
+  }
+
+  for (let i = 1; i < rooms.length; i++) {
+    const a = rooms[i - 1], b = rooms[i];
+    let x = Math.floor(a.cx), y = Math.floor(a.cy);
+    const bx = Math.floor(b.cx), by = Math.floor(b.cy);
+    while (x !== bx) {
+      if (grid[y][x] === "#") grid[y][x] = ",";
+      x += x < bx ? 1 : -1;
+    }
+    while (y !== by) {
+      if (grid[y][x] === "#") grid[y][x] = ",";
+      y += y < by ? 1 : -1;
+    }
+  }
+
+  const extra = Math.floor(Math.random() * 2) + 1;
+  for (let i = 0; i < extra; i++) {
+    const a = rooms[Math.floor(Math.random() * rooms.length)];
+    const b = rooms[Math.floor(Math.random() * rooms.length)];
+    let x = Math.floor(a.cx), y = Math.floor(a.cy);
+    const bx = Math.floor(b.cx), by = Math.floor(b.cy);
+    while (x !== bx) { if (grid[y][x] === "#") grid[y][x] = ","; x += x < bx ? 1 : -1; }
+    while (y !== by) { if (grid[y][x] === "#") grid[y][x] = ","; y += y < by ? 1 : -1; }
+  }
+
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++)
+      if (grid[y][x] === ",") grid[y][x] = ".";
+}
+
+function carve(x, y) { if (x > 0 && y > 0 && x < W - 1 && y < H - 1 && grid[y][x] === "#") grid[y][x] = ","; }
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const overlayP = overlay.querySelector("p");
+const damage = document.getElementById("damage");
+const timeEl = document.getElementById("time");
+const distEl = document.getElementById("dist");
+const startBtn = document.getElementById("startBtn");
+
+let px = CELL * 1.5, py = CELL * 1.5, dir = 0;
+let playing = false, survival = 0, monster = null, phase = 0;
+const keys = {};
+
+document.addEventListener("keydown", e => { keys[e.code] = true; });
+document.addEventListener("keyup", e => { keys[e.code] = false; });
+
+canvas.addEventListener("click", () => { if (playing) canvas.requestPointerLock(); });
+document.addEventListener("mousemove", e => {
+  if (playing && document.pointerLockElement === canvas) {
+    dir += e.movementX * 0.003;
+  }
+});
+
+function collide(x, y) {
+  const r = 10;
+  return isWall(x - r, y) || isWall(x + r, y) || isWall(x, y - r) || isWall(x, y + r);
+}
+
+function start() {
+  generateMap();
+  let rooms = [];
+  for (let y = 1; y < H - 1; y++)
+    for (let x = 1; x < W - 1; x++)
+      if (freeCell(x, y) && freeCell(x + 1, y) && freeCell(x, y + 1) && freeCell(x + 1, y + 1) && Math.random() < 0.02)
+        rooms.push(randomSpotInRoom({ x, y, w: 2, h: 2 }));
+  const a = rooms[Math.floor(Math.random() * rooms.length)] || freeSpot();
+  px = a.x; py = a.y;
+  dir = Math.random() * Math.PI * 2;
+  const m = freeSpot();
+  monster = { x: m.x, y: m.y, speed: 105 };
+  playing = true; survival = 0; phase = 0;
+  overlay.classList.add("hidden");
+  canvas.requestPointerLock();
+}
+
+function end() {
+  playing = false;
+  document.exitPointerLock();
+  overlay.classList.remove("hidden");
+  overlayP.textContent = "👆 Potwór Cię złapał! Przetrwałeś: " + Math.floor(survival) + "s";
+  startBtn.textContent = "Jeszcze raz!";
+}
+
+function update(dt) {
+  survival += dt;
+
+  let mx = 0, my = 0;
+  if (keys.KeyW) { mx += Math.cos(dir); my += Math.sin(dir); }
+  if (keys.KeyS) { mx -= Math.cos(dir); my -= Math.sin(dir); }
+  if (keys.KeyA) { mx += Math.cos(dir + Math.PI / 2); my += Math.sin(dir + Math.PI / 2); }
+  if (keys.KeyD) { mx += Math.cos(dir - Math.PI / 2); my += Math.sin(dir - Math.PI / 2); }
+  const len = Math.hypot(mx, my);
+  if (len > 0) {
+    mx /= len; my /= len;
+    const nx = px + mx * 160 * dt, ny = py + my * 160 * dt;
+    if (!collide(nx, py)) px = nx;
+    if (!collide(px, ny)) py = ny;
+  }
+
+  monster.speed = 105 + survival * 3.5;
+  const dx = px - monster.x, dy = py - monster.y;
+  const d = Math.hypot(dx, dy);
+  const nx = monster.x + (dx / d) * monster.speed * dt;
+  const ny = monster.y + (dy / d) * monster.speed * dt;
+  if (!isWall(nx, monster.y)) monster.x = nx;
+  if (!isWall(monster.x, ny)) monster.y = ny;
+  if (isWall(monster.x, monster.y)) {
+    const p = freeSpot();
+    if (d > 400) { monster.x = p.x; monster.y = p.y; }
+  }
+
+  timeEl.textContent = Math.floor(survival);
+  distEl.textContent = d < CELL ? "TU JEST!" : Math.round(d / CELL) + "m";
+
+  if (d < 35) {
+    damage.style.opacity = "1";
+    setTimeout(() => end(), 300);
+    playing = false;
+  }
+}
+
+function castRay(angle) {
+  let dist = 0, step = 4;
+  const dx = Math.cos(angle) * step, dy = Math.sin(angle) * step;
+  while (dist < 800 && !isWall(px + dx * dist / step, py + dy * dist / step)) dist += step;
+  return dist;
+}
+
+function draw() {
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, w, h);
+
+  const fov = Math.PI / 3;
+  const cols = 160;
+  for (let i = 0; i < cols; i++) {
+    const angle = dir - fov / 2 + (i / cols) * fov;
+    let dist = castRay(angle);
+    dist *= Math.cos(angle - dir);
+    if (dist < 1) dist = 1;
+    const height = Math.min(h * 200, (h / dist) * 300);
+    const shade = Math.max(0, 1 - dist / 550);
+    const red = Math.floor(60 + shade * 160);
+    ctx.fillStyle = `rgb(${red},${Math.floor(shade * 120)},${Math.floor(shade * 110)})`;
+    ctx.fillRect((i / cols) * w, (h - height) / 2, w / cols + 1, height);
+  }
+
+  // monster sprite
+  {
+    const dx = monster.x - px, dy = monster.y - py;
+    const d = Math.hypot(dx, dy);
+    const rel = Math.atan2(dy, dx) - dir;
+    let a = rel;
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    if (Math.abs(a) < fov / 2 + 0.4 && d > 10) {
+      const screenX = (a / fov + 0.5) * w;
+      const size = Math.min(h * 1.2, (h / d) * 260);
+      drawMonster(screenX, h / 2, size, d);
+    }
+  }
+}
+
+function drawMonster(x, y, size, d) {
+  const visible = d < 400;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.globalAlpha = visible ? 1 : 0.35;
+  ctx.font = size + "px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  phase += 0.15;
+  const bob = Math.sin(phase) * size * 0.05;
+  ctx.fillText("👹", 0, bob);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (playing) update(dt);
+  if (monster) draw();
+  requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener("click", start);
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>

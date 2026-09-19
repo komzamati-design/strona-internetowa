@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COW: Global Moo-fensive 🐄</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #1b1b1b; color: #ecc94b; overflow: hidden; user-select: none; }
+  #game { position: relative; width: 100vw; height: 100vh; }
+  canvas { display: block; cursor: none; }
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; padding: 10px 20px;
+    font-weight: bold; font-size: 1.1rem; pointer-events: none;
+    text-shadow: 1px 1px 3px #000;
+  }
+  .hp-bar { width: 200px; height: 14px; background: #333; border: 1px solid #000; margin-top: 4px; }
+  .hp-fill { height: 100%; background: #38a169; width: 100%; }
+  #center {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: rgba(0,0,0,.75); z-index: 5; padding: 2rem;
+  }
+  h1 { font-size: 3rem; color: #f6ad55; text-shadow: 2px 2px #000; }
+  .sub { color: #a0aec0; margin-top: .5rem; }
+  .shop { display: flex; gap: 1rem; margin: 1.5rem 0; flex-wrap: wrap; justify-content: center; }
+  .gun {
+    background: #2d3748; border: 2px solid #4a5568; border-radius: 10px;
+    padding: 1rem; width: 210px; cursor: pointer; transition: .15s;
+  }
+  .gun:hover { border-color: #ecc94b; transform: translateY(-4px); }
+  .gun h3 { font-size: 1.3rem; }
+  .gun p { color: #a0aec0; font-size: .85rem; margin-top: .4rem; }
+  .price { color: #f6ad55; font-weight: bold; margin-top: .5rem; }
+  button.cta {
+    font-size: 1.2rem; padding: .8rem 2.5rem; border: none; border-radius: 8px;
+    background: #ecc94b; color: #1b1b1b; font-weight: bold; cursor: pointer;
+  }
+  button.cta:hover { background: #f6e05e; }
+  .stats { margin-top: 1rem; color: #a0aec0; }
+  #money { color: #68d391; }
+  #roundMsg {
+    position: absolute; top: 40%; left: 0; right: 0; text-align: center;
+    font-size: 2.5rem; font-weight: bold; color: #f6ad55; text-shadow: 2px 2px #000;
+    opacity: 0; pointer-events: none; z-index: 4;
+  }
+  #hitmarker { position: absolute; width: 40px; height: 40px; pointer-events: none; display: none; z-index: 3; }
+</style>
+</head>
+<body>
+<div id="game">
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <div>❤️ HP: <span id="hp">100</span><div class="hp-bar"><div class="hp-fill" id="hpBar"></div></div></div>
+    <div id="roundInfo">RUNDA 1 · Czas 90s</div>
+    <div>💰 <span id="money">800</span> · Zabici: <span id="kills">0</span></div>
+  </div>
+  <div id="roundMsg"></div>
+
+  <div id="center">
+    <h1>COW: Global Moo-fensive</h1>
+    <p class="sub">Strzelaj do krów-terrorystów 🐄 — traf w głowę za bonus $!<br>Nie daj się ruszyć (krowy tupią i odbierają Ci HP)</p>
+    <div class="shop" id="shop"></div>
+    <button class="cta" id="startBtn">START</button>
+    <p class="stats" id="resultStats"></p>
+  </div>
+</div>
+
+<script>
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const hud = { hp: document.getElementById("hp"), hpBar: document.getElementById("hpBar"),
+  money: document.getElementById("money"), kills: document.getElementById("kills"),
+  round: document.getElementById("roundInfo"), msg: document.getElementById("roundMsg") };
+const center = document.getElementById("center"), shopEl = document.getElementById("shop"),
+  statsEl = document.getElementById("resultStats"), startBtn = document.getElementById("startBtn");
+
+let W, H;
+function resize() { W = cv.width = innerWidth; H = cv.height = innerHeight; }
+addEventListener("resize", resize); resize();
+
+const GUNS = {
+  usp:    { name: "USP-S 🐮", price: 0,   dmg: 34, head: 100, cd: 400, clip: 12 },
+  deagle: { name: "Deagle 🔫", price: 700, dmg: 60, head: 150, cd: 600, clip: 7 },
+  ak:     { name: "AK-47 🐂", price: 2700, dmg: 40, head: 140, cd: 120, clip: 30 },
+  awp:    { name: "AWP 🎯",   price: 4750, dmg: 115, head: 250, cd: 1200, clip: 5 }
+};
+
+let state = "menu", money = 800, totalKills = 0, round = 1, hp = 100;
+let gun = "usp", ammo = 12, enemies = [], particles = [], shootCd = 0;
+let mouse = { x: W/2, y: H/2, down: false }, lastShot = 0;
+let roundTime = 90, timerId = null, hitFlash = 0;
+
+const snd = (f, d, type = "square", vol = .15) => {
+  const a = new (AudioContext)(), o = a.createOscillator(), g = a.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, a.currentTime);
+  o.frequency.exponentialRampToValueAtTime(Math.max(30, f/4), a.currentTime + d);
+  g.gain.setValueAtTime(vol, a.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001, a.currentTime + d);
+  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + d);
+};
+function bang() { snd(180, .12, "sawtooth", .25); }
+function moo() { snd(160, .5, "triangle", .2); setTimeout(() => snd(120, .6, "triangle", .2), 200); }
+function ding() { snd(1200, .25, "sine", .2); }
+
+function buildShop() {
+  shopEl.innerHTML = "";
+  for (const k in GUNS) {
+    const g = GUNS[k];
+    const div = document.createElement("div");
+    div.className = "gun";
+    div.innerHTML = `<h3>${g.name}</h3><p>Obrażenia ${g.dmg} · headshot ${g.head} · Tempo ${g.cd}ms · Magazynek ${g.clip}</p>
+      <div class="price">${g.price ? "$" + g.price : "GRATIS"}</div>`;
+    div.onclick = () => {
+      if (money >= g.price) { gun = k; money -= g.price; ammo = g.clip; updHud(); buildShop(); ding(); }
+    };
+    if (gun === k) div.style.borderColor = "#ecc94b";
+    shopEl.appendChild(div);
+  }
+}
+
+function updHud() {
+  document.getElementById("money").textContent = money;
+  document.getElementById("kills").textContent = totalKills;
+  document.getElementById("hp").textContent = Math.max(0, hp);
+  document.getElementById("hpBar").style.width = Math.max(0, hp) + "%";
+  hud.round.textContent = `RUNDA ${round} · ${Math.ceil(roundTime)}s`;
+}
+
+function spawnEnemy() {
+  const dir = Math.random() < .5 ? 1 : -1;
+  const speed = .6 + round * .25 + Math.random() * .8;
+  enemies.push({
+    x: dir > 0 ? -80 : W + 80, dir, speed,
+    y: H * .35 + Math.random() * H * .45,
+    vx: (Math.random() * 2 - 1) * 1.2,
+    phase: Math.random() * Math.PI * 2, hitT: 0
+  });
+}
+
+function startRound() {
+  state = "play";
+  center.style.display = "none";
+  roundTime = 90; ammo = GUNS[gun].clip; hp = Math.min(100, hp + 25);
+  enemies = [];
+  const n = 4 + round;
+  for (let i = 0; i < n; i++) setTimeout(spawnEnemy, i * 1200 / (1 + round * .3));
+  showMsg(`RUNDA ${round} — GO GO GO! 🐄`);
+  updHud();
+  clearInterval(timerId);
+  timerId = setInterval(() => {
+    if (state !== "play") return;
+    roundTime -= 1; updHud();
+    if (roundTime <= 0) endGame("⏰ Czas minął! Teroryści krów wygrały...");
+  }, 1000);
+}
+
+function endRound() {
+  clearInterval(timerId);
+  state = "menu";
+  round++;
+  money += 3000 + round * 500;
+  hp = Math.min(100, hp + 50);
+  showMsg("BOMBA ODCIĘTA! Wygrana runda! 💣🐄");
+  setTimeout(() => { buildShop(); startBtn.textContent = "NASTĘPNA RUNDA"; center.style.display = "flex"; }, 1200);
+}
+
+function endGame(reason) {
+  clearInterval(timerId); state = "over";
+  center.style.display = "flex";
+  startBtn.textContent = "ZAGRAJ PONOWNIE";
+  statsEl.textContent = `Wynik: ${totalKills} krów-terrorystów · Runda ${round} · ${reason}`;
+}
+
+function showMsg(t) {
+  hud.msg.textContent = t;
+  hud.msg.style.opacity = 1;
+  setTimeout(() => hud.msg.style.opacity = 0, 1400);
+}
+
+addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+addEventListener("mousedown", e => { if (e.button === 0) shoot(); });
+addEventListener("keydown", e => { if (e.key.toLowerCase() === "r") reload(); });
+
+function reload() {
+  if (state !== "play" || ammo === GUNS[gun].clip) return;
+  setTimeout(() => { ammo = GUNS[gun].clip; }, 1000);
+  snd(300, .1); setTimeout(() => snd(400, .1), 150);
+}
+
+function shoot() {
+  if (state !== "play") return;
+  const now = performance.now();
+  if (now - lastShot < GUNS[gun].cd) return;
+  if (ammo <= 0) { snd(200, .05, "square", .1); reload(); return; }
+  lastShot = now; ammo--; bang(); updKills();
+  let hit = false;
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    const bx = e.x, by = e.y + 20, hx = e.x, hy = e.y - 28;
+    const dHead = Math.hypot(mouse.x - hx, mouse.y - hy);
+    const dBody = Math.hypot(mouse.x - bx, mouse.y - by);
+    const g = GUNS[gun];
+    let dmg = 0;
+    if (dHead < 22) dmg = g.head;
+    else if (dBody < 34) dmg = g.dmg;
+    if (dmg > 0) {
+      hit = true;
+      e.hp = (e.hp || 100) - dmg;
+      blood(e.x, e.y, dHead < 22);
+      if (dHead < 22) ding();
+      if (e.hp <= 0) {
+        enemies.splice(i, 1);
+        const moneyGet = dHead < 22 ? 300 : 100;
+        money += moneyGet; totalKills++;
+        moo();
+        updHud();
+        if (enemies.length === 0) { endRound(); }
+      }
+      break;
+    }
+  }
+  if (!hit) { snd(700, .05, "sine", .05); }
+}
+
+function updKills() { document.getElementById("kills").textContent = totalKills; updHud(); }
+
+function blood(x, y, head) {
+  const n = head ? 18 : 10;
+  for (let i = 0; i < n; i++)
+    particles.push({ x, y, vx: Math.random() * 8 - 4, vy: Math.random() * 8 - 4, life: .5, head });
+}
+
+function drawCow(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  if (e.hitT > 0) { ctx.globalAlpha = .6; }
+  ctx.scale(e.dir, 1);
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.ellipse(0, 20, 34, 26, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.ellipse(-12, 26, 10, 8, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(14, 10, 8, 7, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.ellipse(26, -28, 18, 16, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = "#ffb6b6";
+  ctx.beginPath(); ctx.ellipse(36, -22, 9, 7, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.arc(31, -32, 3, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(20, -33, 3, 0, 7); ctx.fill();
+  for (let i = 0; i < 2; i++) {
+    const t = e.phase + Date.now() / 300;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(12 + i * 10, 40 + Math.sin(t + i) * 3, 6, 22);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(12 + i * 10, 60 + Math.sin(t + i) * 3, 8, 5);
+  }
+  ctx.strokeStyle = "#a0aec0"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-30, 10); ctx.quadraticCurveTo(-48, 0, -46, -8); ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(28, 20); ctx.quadraticCurveTo(45, 25, 50, 30); ctx.stroke();
+  ctx.restore();
+  e.hitT = 0;
+  const hpPct = (e.hp || 100) / 100;
+  ctx.fillStyle = "#333"; ctx.fillRect(e.x - 25, e.y - 74, 50, 6);
+  ctx.fillStyle = hpPct > .5 ? "#68d391" : "#fc8181"; ctx.fillRect(e.x - 25, e.y - 74, 50 * hpPct, 6);
+}
+
+function drawCrosshair() {
+  ctx.save();
+  ctx.strokeStyle = "#68d391"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(mouse.x - 14, mouse.y); ctx.lineTo(mouse.x - 5, mouse.y);
+  ctx.moveTo(mouse.x + 5, mouse.y); ctx.lineTo(mouse.x + 14, mouse.y);
+  ctx.moveTo(mouse.x, mouse.y - 14); ctx.lineTo(mouse.x, mouse.y - 5);
+  ctx.moveTo(mouse.x, mouse.y + 5); ctx.lineTo(mouse.x, mouse.y + 14);
+  ctx.stroke();
+  ctx.fillStyle = "#68d391";
+  ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 1.5, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  const grd = ctx.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, "#2b2b2b"); grd.addColorStop(1, "#111");
+  ctx.fillStyle = grd; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#333";
+  for (let i = 0; i < 8; i++) ctx.fillRect((i + 1) * W / 9 - 2, H * .3, 4, H * .7);
+
+  if (state === "play") {
+    for (const e of enemies) {
+      e.x += e.vel_x || e.speed * e.dir;
+      e.y += Math.sin(Date.now() / 500 + e.phase) * .8;
+      e.phase += .02;
+      e.hitT = Math.max(0, (e.hitT || 0) - 0.05);
+      const edge = e.speed * e.dir;
+      if ((e.dir > 0 && e.x > W - 60) || (e.dir < 0 && e.x < 60)) {
+        e.dir *= -1;
+        e.hp = undefined;
+        hp -= 10; updHud();
+        showMsg(`🐄 Krowa cię tupię! -10 HP`);
+        snd(140, .3, "triangle", .3);
+        if (hp <= 0) { endGame("💀 Zginąłeś! Krowy cię zkopały..."); }
+      }
+      if (e.x > W + 120 || e.x < -120) e.x = e.dir > 0 ? -80 : W + 80;
+    }
+  }
+
+  for (const e of enemies) drawCow(e);
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += .4; p.life -= .03;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    ctx.fillStyle = p.head ? "#8b0000" : "rgba(150,20,20,.8)";
+    ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, 7); ctx.fill();
+  }
+
+  if (state === "play") {
+    if (ammo === 0) {
+      ctx.fillStyle = "#fc8181"; ctx.font = "bold 20px Segoe UI";
+      ctx.fillText("PRZEŁADUJ! [R]", W / 2 - 70, H - 60);
+    }
+    ctx.fillStyle = "#ecc94b"; ctx.font = "bold 18px Segoe UI";
+    ctx.fillText(`${GUNS[gun].name} · Ammo ${ammo}`, W / 2 - 60, H - 40);
+  }
+
+  if (state === "play" || state === "over") drawCrosshair();
+}
+
+updHud(); buildShop(); loop();
+
+startBtn.onclick = () => {
+  if (state === "over") { money = 800; totalKills = 0; round = 1; hp = 100; gun = "usp"; ammo = GUNS.usp.clip; }
+  startRound();
+};
+</script>
+</body>
+</html>

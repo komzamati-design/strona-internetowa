@@ -1,0 +1,752 @@
+﻿<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escape Cheese 🧀</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; overflow: hidden; user-select: none; background: #000; }
+  #game { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+  #hud {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    color: #fff; font-size: 1.2rem; font-weight: bold;
+    background: rgba(0,0,0,.55); padding: .5rem 1.5rem; border-radius: 50px;
+    display: flex; gap: 2rem; z-index: 5; pointer-events: none; flex-wrap: wrap; justify-content: center;
+  }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.88);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #fff; text-align: center; z-index: 10;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h2 { font-size: 2.5rem; margin-bottom: 1rem; color: #ffd54f; }
+  #overlay button {
+    font-size: 1.3rem; padding: 1rem 2.5rem; border: none; border-radius: 50px;
+    background: #f9a825; color: #000; cursor: pointer; margin-top: 1rem; font-weight: bold;
+  }
+  #overlay button:hover { background: #ffca28; transform: scale(1.05); }
+  #damage { position: fixed; inset: 0; background: rgba(255,0,0,.45); opacity: 0; pointer-events: none; z-index: 8; transition: opacity .2s; }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+<div id="hud">
+  <span>🏰 Poziom: <span id="level">1</span></span>
+  <span>🧀 Sery: <span id="cheese">0</span>/5</span>
+  <span id="keyIcon" style="visibility:hidden">🔑 Klucz!</span>
+  <span>🐀 Odległość: <span id="dist">?</span></span>
+</div>
+<div id="damage"></div>
+<div id="overlay">
+  <h2>🧀 ESCAPE CHEESE</h2>
+  <p>Zbierz 5 serów 🧀 na poziomie → dostaniesz klucz 🔑 → znajdź drzwi 🚪 i uciekaj.<br>Rat 🐀 Cię goni! WSAD – ruch, myszka – rozglądanie się (kliknij planszę).<br>Jak Cię złapie – wracasz na checkpoint (spawn poziomu).</p>
+  <div style="font-size:3rem">↓</div>
+  <button id="startBtn">Start!</button>
+</div>
+
+<script>
+const W = 40, H = 30, CELL = 64;
+let grid = [], roomsList = [];
+
+const canvas = document.getElementById("game");
+const out = canvas.getContext("2d");
+const buf = document.createElement("canvas");
+const ctx = buf.getContext("2d");
+const tmp = document.createElement("canvas");
+const tctx = tmp.getContext("2d");
+const overlay = document.getElementById("overlay");
+const overlayP = overlay.querySelector("p");
+const damage = document.getElementById("damage");
+const levelEl = document.getElementById("level");
+const cheeseEl = document.getElementById("cheese");
+const keyIcon = document.getElementById("keyIcon");
+const distEl = document.getElementById("dist");
+const startBtn = document.getElementById("startBtn");
+
+let px, py, dir = 0;
+let playing = false, keysDown = {};
+let level = 1, cheeseGot = 0, hasKey = false;
+let cheeses = [], keyItem = null, exitDoor = null;
+let rat = null, ratPath = [], repath = 0, phase = 0;
+let spawnPoint = null;
+
+/* ---------- MAPA: backrooms - pokoje i korytarze ---------- */
+function isWall(x, y) {
+  const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
+  if (cx < 0 || cy < 0 || cx >= W || cy >= H) return true;
+  return grid[cy][cx] === "#";
+}
+
+function freeSpot() {
+  while (true) {
+    const x = (Math.random() * (W - 2) + 1) * CELL + CELL / 2;
+    const y = (Math.random() * (H - 2) + 1) * CELL + CELL / 2;
+    if (!isWall(x, y)) return { x, y };
+  }
+}
+
+function generateMap() {
+  grid = Array.from({ length: H }, () => Array(W).fill("#"));
+  const rooms = [];
+  const target = 11 + level;
+
+  for (let tries = 0; tries < 400 && rooms.length < target; tries++) {
+    const rw = 4 + Math.floor(Math.random() * 5);
+    const rh = 4 + Math.floor(Math.random() * 4);
+    const rx = 1 + Math.floor(Math.random() * (W - rw - 2));
+    const ry = 1 + Math.floor(Math.random() * (H - rh - 2));
+    const r = { x: rx, y: ry, w: rw, h: rh, cx: rx + rw / 2 - 0.5, cy: ry + rh / 2 - 0.5 };
+    if (rooms.some(o =>
+      rx - 1 < o.x + o.w + 1 && rx + rw + 1 > o.x - 1 &&
+      ry - 1 < o.y + o.h + 1 && ry + rh + 1 > o.y - 1)) continue;
+    for (let y = ry; y < ry + rh; y++)
+      for (let x = rx; x < rx + rw; x++)
+        grid[y][x] = ".";
+    rooms.push(r);
+  }
+
+  function corridor(a, b) {
+    let x = Math.floor(a.cx), y = Math.floor(a.cy);
+    const bx = Math.floor(b.cx), by = Math.floor(b.cy);
+    while (x !== bx) { if (grid[y][x] === "#") grid[y][x] = "."; x += x < bx ? 1 : -1; }
+    while (y !== by) { if (grid[y][x] === "#") grid[y][x] = "."; y += y < by ? 1 : -1; }
+  }
+
+  for (let i = 1; i < rooms.length; i++) corridor(rooms[i - 1], rooms[i]);
+  const extra = 2 + Math.floor(level / 2);
+  for (let i = 0; i < extra; i++)
+    corridor(rooms[Math.floor(Math.random() * rooms.length)], rooms[Math.floor(Math.random() * rooms.length)]);
+
+  roomsList = rooms;
+}
+
+function collide(x, y) {
+  const r = 10;
+  return isWall(x - r, y) || isWall(x + r, y) || isWall(x, y - r) || isWall(x, y + r);
+}
+
+/* ---------- BFS do ratra ---------- */
+function bfs(from, to) {
+  const sx = Math.floor(from.x / CELL), sy = Math.floor(from.y / CELL);
+  const tx = Math.floor(to.x / CELL), ty = Math.floor(to.y / CELL);
+  const prev = new Map(), q = [[sx, sy]];
+  prev.set(sx + "," + sy, null);
+  while (q.length) {
+    const [x, y] = q.shift();
+    if (x === tx && y === ty) {
+      const path = [];
+      let k = x + "," + y;
+      while (k) {
+        const [a, b] = k.split(",").map(Number);
+        path.unshift({ x: (a + 0.5) * CELL, y: (b + 0.5) * CELL });
+        k = prev.get(k);
+      }
+      return path;
+    }
+    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nx = x + dx, ny = y + dy, k = nx + "," + ny;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H || grid[ny][nx] === "#" || prev.has(k)) continue;
+      prev.set(k, x + "," + y);
+      q.push([nx, ny]);
+    }
+  }
+  return [];
+}
+
+/* ---------- START / RESET ---------- */
+function startLevel() {
+  generateMap();
+  const s = roomsList[0];
+  spawnPoint = { x: (s.cx + 0.5) * CELL, y: (s.cy + 0.5) * CELL };
+  px = spawnPoint.x; py = spawnPoint.y;
+  dir = Math.random() * Math.PI * 2;
+  cheeseGot = 0; hasKey = false;
+  keyItem = null; exitDoor = null;
+  cheeseEl.textContent = "0";
+  keyIcon.style.visibility = "hidden";
+
+  const spots = roomsList.slice(1).sort(() => Math.random() - 0.5);
+  cheeses = spots.slice(0, 5).map(r => ({
+    x: (r.cx + (Math.random() - 0.5) * r.w * 0.6) * CELL,
+    y: (r.cy + (Math.random() - 0.5) * r.h * 0.6) * CELL,
+    taken: false
+  }));
+  exitDoor = { x: spawnPoint.x, y: spawnPoint.y };
+  const far = spots[5] || spots[0];
+  exitDoor = { x: (far.cx + 0.5) * CELL, y: (far.cy + 0.5) * CELL, active: false };
+
+  const ms = spots[6] || spots[5] || spots[0];
+  rat = { x: (ms.cx + 0.5) * CELL, y: (ms.cy + 0.5) * CELL, speed: 82 + level * 8 };
+  ratPath = [];
+  repath = 0;
+
+}
+
+function catchError() {
+  playing = false;
+  document.exitPointerLock();
+  overlay.classList.remove("hidden");
+  overlayP.innerHTML = "🐀 RAT CIĘ ZŁAPAŁ!<br>Wracasz na checkpoint tego poziomu (🧀̲ licznik resetuje się).<br>Poziom <b>" + level + "</b>";
+  startBtn.textContent = "Spróbuj ponownie!";
+}
+
+function levelDone() {
+  playing = false;
+  document.exitPointerLock();
+  overlay.classList.remove("hidden");
+  overlayP.innerHTML = "🎉 POZIOM UKOŃCZONY! Przechodzisz na poziom <b>" + (level + 1) + "</b>.<br>Tu się odradzasz 🏁";
+  startBtn.textContent = "Następny poziom!";
+  level++;
+  levelEl.textContent = level;
+}
+
+startBtn.addEventListener("click", () => {
+  if (playing) return;
+  startLevel();
+  overlay.classList.add("hidden");
+  startBtn.blur();
+  document.activeElement && document.activeElement.blur();
+  playing = true;
+  canvas.requestPointerLock();
+});
+
+/* ---------- WEJŚCIE (odporne na wszelkie dziwactwa przeglądarki) ---------- */
+const KEYMAP = {
+  w: "KeyW", s: "KeyS", a: "KeyA", d: "KeyD",
+  arrowup: "KeyW", arrowdown: "KeyS", arrowleft: "KeyA", arrowright: "KeyD"
+};
+window.addEventListener("keydown", e => {
+  const k = KEYMAP[(e.key || "").toLowerCase()];
+  keysDown[k || e.code] = true;
+  if (k || e.code === "Space") e.preventDefault();
+}, true);
+window.addEventListener("keyup", e => {
+  const k = KEYMAP[(e.key || "").toLowerCase()];
+  keysDown[k || e.code] = false;
+}, true);
+window.addEventListener("blur", () => { for (const k in keysDown) keysDown[k] = false; });
+
+canvas.addEventListener("mousedown", e => {
+  if (playing && e.button === 0) { dragLook = true; canvas.requestPointerLock(); }
+});
+document.addEventListener("mouseup", () => { dragLook = false; });
+let dragLook = false, lastMX = 0;
+document.addEventListener("mousemove", e => {
+  if (!playing) return;
+  if (document.pointerLockElement === canvas) dir += e.movementX * 0.003;
+  else if (dragLook) { dir += (e.clientX - lastMX) * 0.005; }
+  lastMX = e.clientX;
+});
+
+/* przyciski dotykowe (telefon/tablet) */
+function makeTouchKey(key, label, css) {
+  const b = document.createElement("div");
+  b.textContent = label;
+  b.style.cssText =
+    "position:fixed;z-index:9;width:56px;height:56px;text-align:center;line-height:56px;" +
+    "background:rgba(0,0,0,.45);color:#fff;font-size:20px;font-weight:bold;border-radius:50%;" +
+    "user-select:none;touch-action:none;" + css;
+  for (const ev of ["touchstart", "mousedown"]) {
+    b.addEventListener(ev, ev2 => { ev2.preventDefault(); keysDown[key] = true; });
+  }
+  for (const ev of ["touchend", "touchcancel", "mouseup", "mouseleave"]) {
+    b.addEventListener(ev, () => { keysDown[key] = false; });
+  }
+  document.body.appendChild(b);
+}
+makeTouchKey("KeyW", "🡅", "left:70px;bottom:190px;");
+makeTouchKey("KeyA", "🡇", "left:28px;transform:rotate(-45deg);bottom:120px;");
+makeTouchKey("KeyS", "🡇", "left:70px;bottom:60px;");
+makeTouchKey("KeyD", "🡇", "left:112px;transform:rotate(45deg);bottom:120px;");
+
+/* ---------- UPDATE ---------- */
+let velX = 0, velY = 0;
+
+function update(dt) {
+  let mx = 0, my = 0;
+  if (keysDown.KeyW) { mx += Math.cos(dir); my += Math.sin(dir); }
+  if (keysDown.KeyS) { mx -= Math.cos(dir); my -= Math.sin(dir); }
+  if (keysDown.KeyA) { mx += Math.cos(dir + Math.PI / 2); my += Math.sin(dir + Math.PI / 2); }
+  if (keysDown.KeyD) { mx += Math.cos(dir - Math.PI / 2); my += Math.sin(dir - Math.PI / 2); }
+  const len = Math.hypot(mx, my);
+  const SPEED = 175;
+  const tx = len > 0 ? mx / len * SPEED : 0, ty = len > 0 ? my / len * SPEED : 0;
+  const k = Math.min(1, dt * 8);
+  velX += (tx - velX) * k;
+  velY += (ty - velY) * k;
+
+  const nx = px + velX * dt, ny = py + velY * dt;
+  if (!collide(nx, py)) px = nx;
+  if (!collide(px, ny)) py = ny;
+
+  for (const c of cheeses) {
+    if (!c.taken && Math.hypot(c.x - px, c.y - py) < 40) {
+      c.taken = true;
+      cheeseGot++;
+      cheeseEl.textContent = cheeseGot;
+      if (cheeseGot >= 5 && !hasKey) {
+        const r = roomsList[Math.floor(Math.random() * roomsList.length)];
+        keyItem = { x: (r.cx + 0.5) * CELL, y: (r.cy + 0.5) * CELL };
+        exitDoor.active = true;
+      }
+    }
+  }
+
+  if (keyItem && Math.hypot(keyItem.x - px, keyItem.y - py) < 40) {
+    keyItem = null;
+    hasKey = true;
+    keyIcon.style.visibility = "visible";
+  }
+
+  if (exitDoor.active && hasKey && Math.hypot(exitDoor.x - px, exitDoor.y - py) < 45) {
+    levelDone();
+    return;
+  }
+
+  repath -= dt;
+  if (repath <= 0) {
+    repath = 0.4;
+    ratPath = bfs(rat, { x: px, y: py });
+  }
+  rat.speed = 82 + level * 8 + cheeseGot * 6;
+  if (ratPath.length > 1) {
+    const t = ratPath[1];
+    const dx = t.x - rat.x, dy = t.y - rat.y;
+    const d = Math.hypot(dx, dy);
+    if (d <= rat.speed * dt) ratPath.shift();
+  }
+  {
+    const t = ratPath[1] || ratPath[0];
+    if (t) {
+      const dx = t.x - rat.x, dy = t.y - rat.y;
+      const d = Math.max(0.001, Math.hypot(dx, dy));
+      const k = Math.min(1, dt * 6);
+      rat.vx = (rat.vx || 0) + (dx / d * rat.speed - (rat.vx || 0)) * k;
+      rat.vy = (rat.vy || 0) + (dy / d * rat.speed - (rat.vy || 0)) * k;
+      const rx = rat.x + rat.vx * dt, ry = rat.y + rat.vy * dt;
+      if (!isWall(rx, rat.y)) rat.x = rx;
+      if (!isWall(rat.x, ry)) rat.y = ry;
+    }
+  }
+
+  const dr = Math.hypot(rat.x - px, rat.y - py);
+  distEl.textContent = dr < CELL ? "🚨 ZA BLISKO!" : Math.round(dr / CELL) + "m";
+
+  if (dr < 35) {
+    damage.style.opacity = "1";
+    playing = false;
+    setTimeout(() => { damage.style.opacity = "0"; catchError(); }, 350);
+  }
+}
+
+/* ---------- RENDER ---------- */
+let lastHit = { u: 0.5 };
+
+function castRay(angle) {
+  let dist = 0, step = 2;
+  const dx = Math.cos(angle) * step, dy = Math.sin(angle) * step;
+  while (dist < 900 && !isWall(px + dx * dist / step, py + dy * dist / step)) {
+    dist += step;
+  }
+  const hx = px + dx * dist / step, hy = py + dy * dist / step;
+  lastHit = { u: hx + hy };
+  return dist;
+}
+
+function drawSprite(e, x, y, size, alpha, bob) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = size + "px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(e, x, y + (bob || 0));
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  if (buf.width !== canvas.clientWidth || buf.height !== canvas.clientHeight) {
+    buf.width = canvas.clientWidth;
+    buf.height = canvas.clientHeight;
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+  const w = buf.width, h = buf.height;
+  ctx.fillStyle = "#0d0b06";
+  ctx.fillRect(0, 0, w, h);
+
+  const fov = Math.PI / 3;
+  const cols = 320;
+  for (let i = 0; i < cols; i++) {
+    const angle = dir - fov / 2 + (i / cols) * fov;
+    let dist = castRay(angle);
+    dist *= Math.cos(angle - dir);
+    if (dist < 1) dist = 1;
+    const height = Math.min(h * 200, (h / dist) * 300);
+    let shade = Math.max(0, 1 - dist / 600);
+
+    // SEROWE kafelki: zolty blok, fugi poziome i pionowe, checker
+    const u = lastHit.u;
+    const noise = Math.sin(i * 12.9898) * 43758.5453;
+    const n = noise - Math.floor(noise);
+    const tileI = Math.floor(u * 2);
+    const ck = (tileI % 2 === 0) ? 1 : 0.92;
+    const b = shade * ck * (0.9 + n * 0.2);
+    const colX = (i / cols) * w, colW = w / cols + 1;
+    const colY = (h - height) / 2;
+
+    // bazowy zolty ser
+    ctx.fillStyle = `rgb(${Math.floor(20 + b * 235)},${Math.floor(16 + b * 200)},${Math.floor(10 + b * 50)})`;
+    ctx.fillRect(colX, colY, colW, height);
+
+    // pionowe fugi (krawedzie kafelka)
+    const seam = ((u * 2) % 1 + 1) % 1;
+    if (seam < 0.045) {
+      ctx.fillStyle = `rgba(90,60,8,${0.45 * shade + 0.06})`;
+      ctx.fillRect(colX, colY, colW, height);
+    }
+
+    // fugi: poziome rzedy
+    ctx.fillStyle = `rgba(120,85,10,${0.35 * shade + 0.08})`;
+    for (const rf of [0.33, 0.66]) ctx.fillRect(colX, colY + height * rf, colW, Math.max(1.5, height * 0.015));
+
+    // dziury w serze
+    const cellQ = Math.floor(u * 3);
+    const qn = Math.abs(Math.sin(cellQ * 91.7 + Math.floor(u) * 17.3));
+    if (qn < 0.65 && shade > 0.05) {
+      for (const hf of [0.2, 0.55, 0.85]) {
+        if (Math.abs(Math.sin(cellQ * 13.1 + hf * 57.7)) < 0.45) continue;
+        const rr = Math.max(2, height * (0.02 + qn * 0.05));
+        ctx.fillStyle = `rgba(40,25,5,${0.5 * shade + 0.1})`;
+        ctx.beginPath();
+        ctx.ellipse(colX + colW / 2, colY + height * hf, rr, rr * (0.7 + qn * 0.5), 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // sprites: rysowanie od najdalszych do najbliższych
+  const sprites = [];
+  for (const c of cheeses) if (!c.taken) sprites.push({ e: "🧀", x: c.x, y: c.y });
+  if (keyItem) sprites.push({ e: "🔑", x: keyItem.x, y: keyItem.y });
+  if (exitDoor) sprites.push({ e: exitDoor.active ? "🚪" : "🧱", x: exitDoor.x, y: exitDoor.y });
+  sprites.push({ e: "🐀", x: rat.x, y: rat.y });
+
+  const rel = s => {
+    const d = Math.hypot(s.x - px, s.y - py);
+    let a = Math.atan2(s.y - py, s.x - px) - dir;
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return { ...s, d, a: d > 10 ? a : 99 };
+  };
+  sprites.map(rel).filter(s => Math.abs(s.a) < fov / 2 + 0.4)
+    .sort((a, b) => b.d - a.d)
+    .forEach(s => {
+      const wallD = castRay(s.a); // czy sciana zaslania sprite?
+      if (wallD < s.d - 18) return; // ukryte za ścianą
+      const screenX = (s.a / fov + 0.5) * w;
+      const size = Math.min(h * 1.1, (h / s.d) * 240);
+      if (s.e === "🐀") {
+        drawRobloxRat(screenX, h / 2, size, s.d);
+      } else if (s.e === "🧀") {
+        drawTable(screenX, h / 2, size * 0.95, s.d);
+        drawCheese3D(screenX, h / 2 - size * 0.02, size * 0.8, s.d);
+      } else {
+        drawSprite(s.e, screenX, h / 2, size, s.d < 420 ? 1 : 0.4, 0);
+      }
+    });
+
+  paintVHS(w, h);
+}
+
+/* realistyczny 3D kawalek sera – klin z gradientem, skorka i dziurami */
+function drawCheese3D(x, y, s, d) {
+  if (s < 8) return;
+  const alpha = d < 420 ? 1 : 0.4;
+  const shadeMask = Math.min(1, Math.max(0.25, 1 - d / 700));
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // gorna scianka (swietlana krawedz)
+  ctx.fillStyle = "#ffd75e";
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.3, y - s * 0.2);
+  ctx.lineTo(x + s * 0.26, y - s * 0.12);
+  ctx.lineTo(x + s * 0.26, y - s * 0.2);
+  ctx.closePath();
+  ctx.fill();
+
+  // cialo klinu (gradient)
+  const g = ctx.createLinearGradient(x, y - s * 0.22, x, y + s * 0.08);
+  g.addColorStop(0, "#ffdc6b");
+  g.addColorStop(0.55, "#efb02b");
+  g.addColorStop(1, "#c6890e");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.3, y - s * 0.2);
+  ctx.lineTo(x + s * 0.26, y - s * 0.1);
+  ctx.lineTo(x + s * 0.26, y + s * 0.08);
+  ctx.closePath();
+  ctx.fill();
+
+  // skorka po lewej stronie
+  ctx.fillStyle = "rgba(150,88,6,.65)";
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.3, y - s * 0.2);
+  ctx.lineTo(x - s * 0.26, y - s * 0.135);
+  ctx.lineTo(x - s * 0.26, y - s * 0.125);
+  ctx.closePath();
+  ctx.fill();
+
+  // dziury w serze
+  const holes = [[-0.12, -0.09, 0.05], [0.05, -0.04, 0.04], [0.16, 0.0, 0.03], [-0.02, -0.115, 0.028]];
+  for (const [hx, hy, hr] of holes) {
+    ctx.fillStyle = "rgba(90,50,4,.7)";
+    ctx.beginPath();
+    ctx.ellipse(x + hx * s, y + hy * s, hr * s, hr * s * 0.62, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // cien i highlight krawedzi
+  ctx.strokeStyle = "rgba(255,240,150,.8)";
+  ctx.lineWidth = Math.max(1, s * 0.02);
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.3, y - s * 0.2);
+  ctx.lineTo(x + s * 0.26, y - s * 0.1);
+  ctx.stroke();
+  ctx.globalAlpha = alpha * (1 - shadeMask) * 0.8;
+  ctx.fillStyle = "rgba(0,0,20,1)";
+  ctx.fillRect(x - s * 0.35, y - s * 0.35, s * 0.65, s * 0.45);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* drewniany stolik pod serem */
+function drawTable(x, y, s, d) {
+  if (s < 10) return;
+  ctx.save();
+  ctx.globalAlpha = d < 420 ? 1 : 0.4;
+  ctx.fillStyle = "rgba(0,0,0,.35)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + s * 0.3, s * 0.3, s * 0.06, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#5d4037";
+  ctx.lineWidth = Math.max(2, s * 0.045);
+  for (const lx of [-0.18, 0.18]) {
+    ctx.beginPath();
+    ctx.moveTo(x + lx * s, y + s * 0.04);
+    ctx.lineTo(x + lx * s, y + s * 0.3);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#6d4c41";
+  ctx.beginPath();
+  ctx.ellipse(x, y + s * 0.02, s * 0.27, s * 0.065, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#a1887f";
+  ctx.beginPath();
+  ctx.ellipse(x, y - s * 0.02, s * 0.27, s * 0.065, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* Szczur w stylu Cheese Escape (Roblox) – rysowany wektorowo, animowany */
+function drawRobloxRat(x, y, s, d) {
+  if (s < 8) return;
+  const t = performance.now() / 1000;
+  const run = Math.min(1, s / 120);
+  const wig = Math.sin(t * (6 + s * 0.03)) * run;
+  const bob = Math.sin(t * 10) * s * 0.03 * run;
+
+  ctx.save();
+  ctx.translate(x, y + bob);
+  ctx.globalAlpha = d < 420 ? 1 : 0.45;
+
+  // cień
+  ctx.fillStyle = "rgba(0,0,0,.4)";
+  ctx.beginPath();
+  ctx.ellipse(0, s * 0.34, s * 0.3, s * 0.08, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ogon
+  ctx.strokeStyle = "#b3b3b3";
+  ctx.lineWidth = s * 0.035;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.05, s * 0.22);
+  ctx.quadraticCurveTo(s * 0.45, s * (0.25 + wig * 0.08), s * 0.55, s * (-0.05 + wig * 0.1));
+  ctx.stroke();
+
+  // nogi (bieg)
+  ctx.fillStyle = "#8f8f8f";
+  const legPh = t * 12;
+  for (const [lx, ph] of [[-0.14, 0], [0.12, Math.PI], [-0.1, Math.PI], [0.14, 0]]) {
+    const ly = Math.sin(legPh + ph) * s * 0.05 * run;
+    ctx.beginPath();
+    ctx.ellipse(lx * s, s * 0.26 + ly, s * 0.05, s * 0.07, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ciało (gradient 3D)
+  const gb = ctx.createLinearGradient(-s * 0.25, 0, s * 0.25, 0);
+  gb.addColorStop(0, "#8a8a8a");
+  gb.addColorStop(0.45, "#b5b5b5");
+  gb.addColorStop(0.7, "#c9c9c9");
+  gb.addColorStop(1, "#808080");
+  ctx.fillStyle = gb;
+  ctx.beginPath();
+  ctx.ellipse(0, s * 0.12, s * 0.24, s * 0.18, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // głowa (blokowa, wielka jak w Roblox)
+  const gh = ctx.createLinearGradient(0, -s * 0.33, 0, 0);
+  gh.addColorStop(0, "#d2d2d2");
+  gh.addColorStop(0.55, "#bcbcbc");
+  gh.addColorStop(1, "#8f8f8f");
+  ctx.fillStyle = gh;
+  ctx.beginPath();
+  ctx.ellipse(0, -s * 0.16, s * 0.19, s * 0.17, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // uszy
+  for (const ex of [-0.13, 0.13]) {
+    ctx.fillStyle = "#bcbcbc";
+    ctx.beginPath();
+    ctx.arc(ex * s, -s * 0.3, s * 0.09, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f48fb1";
+    ctx.beginPath();
+    ctx.arc(ex * s, -s * 0.3, s * 0.05, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // pysk
+  ctx.fillStyle = "#d7d7d7";
+  ctx.beginPath();
+  ctx.ellipse(0, -s * 0.03, s * 0.09, s * 0.07, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // nos
+  ctx.fillStyle = "#e53935";
+  ctx.beginPath();
+  ctx.arc(0, -s * 0.05, s * 0.032, 0, Math.PI * 2);
+  ctx.fill();
+
+  // oczy – świecące na czerwono
+  for (const ex of [-0.075, 0.075]) {
+    ctx.fillStyle = "#ffeb3b";
+    ctx.beginPath();
+    ctx.arc(ex * s, -s * 0.19, s * 0.045, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.save();
+    ctx.shadowColor = "#f00";
+    ctx.shadowBlur = Math.max(2, s * 0.12);
+    ctx.fillStyle = "#d50000";
+    ctx.beginPath();
+    ctx.arc(ex * s, -s * 0.19, s * 0.026, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // wąsy
+  ctx.strokeStyle = "#666";
+  ctx.lineWidth = Math.max(1, s * 0.012);
+  for (const side of [-1, 1]) {
+    for (const [ax, ay] of [[0.05, 0.02], [0.06, 0.05], [0.05, 0.08]]) {
+      ctx.beginPath();
+      ctx.moveTo(side * s * 0.06, -s * 0.04);
+      ctx.lineTo(side * s * (0.06 + ax), -s * (-0.04 + ay * side * 0.6));
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- POST-PROCESSING VHS ---------- */
+function tintCanvas(src, color) {
+  if (tmp.width !== src.width || tmp.height !== src.height) {
+    tmp.width = src.width;
+    tmp.height = src.height;
+  }
+  tctx.globalCompositeOperation = "source-over";
+  tctx.drawImage(src, 0, 0);
+  tctx.globalCompositeOperation = "multiply";
+  tctx.fillStyle = color;
+  tctx.fillRect(0, 0, tmp.width, tmp.height);
+  tctx.globalCompositeOperation = "source-over";
+  return tmp;
+}
+
+function paintVHS(w, h) {
+  out.clearRect(0, 0, w, h);
+  out.drawImage(buf, 0, 0);
+
+  // aberracja chromatyczna (rozjechane kanaly RGB)
+  out.save();
+  out.globalCompositeOperation = "screen";
+  out.globalAlpha = 0.3;
+  out.drawImage(tintCanvas(buf, "rgb(255,20,40)"), -1.6, 0.5);
+  out.drawImage(tintCanvas(buf, "rgb(20,80,255)"), 1.6, -0.5);
+  out.restore();
+
+  // glitch – przesunięte pasy obrazu
+  if (Math.random() < 0.06) {
+    for (let k = 0; k < 3; k++) {
+      const y = Math.random() * h;
+      const bh = 4 + Math.random() * 14;
+      const sh = (Math.random() - 0.5) * 14;
+      out.drawImage(buf, 0, y, w, bh, sh, y, w, bh);
+    }
+  }
+
+  // rolling band (przematujuca pasemko)
+  const bandY = ((performance.now() / 35) % (h + 160)) - 80;
+  out.save();
+  out.globalAlpha = 0.07;
+  out.fillStyle = "rgba(255,255,255,.9)";
+  out.fillRect(0, bandY, w, 30);
+  out.restore();
+
+  // scanlines
+  out.fillStyle = "rgba(0,0,0,.22)";
+  for (let y = 0; y < h; y += 3) out.fillRect(0, y, w, 1.2);
+
+  // winieta
+  const g = out.createRadialGradient(w / 2, h / 2, h * 0.3, w / 2, h / 2, h * 0.85);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, "rgba(0,0,0,.6)");
+  out.fillStyle = g;
+  out.fillRect(0, 0, w, h);
+
+  // napisy VHS
+  out.fillStyle = "rgba(255,255,255,.75)";
+  out.font = "bold " + Math.max(14, h * 0.026) + "px 'Courier New', monospace";
+  out.textAlign = "left";
+  out.fillText("▶ PLAY", 24, h * 0.07);
+  const tc = new Date(survival * 1000).toISOString().substr(14, 5);
+  out.textAlign = "right";
+  out.fillText("SP  0:" + tc, w - 24, h * 0.93);
+  out.textAlign = "left";
+  out.fillStyle = "rgba(255,60,60,.8)";
+  if (playing) out.fillText("● REC", 24, h * 0.94);
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (playing) update(dt);
+  if (rat) draw();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
+

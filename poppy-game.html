@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Poppy Escape</title>
+<style>
+  body { margin:0; background:#000; display:flex; justify-content:center; align-items:center; height:100vh; font-family:monospace; }
+  canvas { background:#000; image-rendering:pixelated; }
+  #hud { color:#f33; position:fixed; top:10px; left:10px; }
+  #msg { color:#fff; position:fixed; bottom:20px; width:100%; text-align:center; font-size:20px; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="600"></canvas>
+<div id="hud"></div>
+<div id="msg"></div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const msg = document.getElementById('msg');
+const hud = document.getElementById('hud');
+
+const TILE = 40;
+const MAP = [
+"####################",
+"#S..#.......#.....E#",
+"#.#.#.#####.#.###.##",
+"#.#...#...#.#.#...##",
+"#.#####.#.#.#.#.####",
+"#.....#.#...#.#....#",
+"#####.#.#####.####.#",
+"#T....#.....T....#.#",
+"#.#########.#####..#",
+"#.#.......#.#...#.##",
+"#.#.#####.#.#.#.#.##",
+"#...#...#...#.#...T#",
+"###.#.#.#####.###.##",
+"#...#.#.....#.#...##",
+"#.###.#####.#.#.##T#",
+"#.#.........#.#....#",
+"#.#.#########.####.#",
+"#.#.#.......#....#.#",
+"#...#...M...#....#.#",
+"####################"
+];
+const W = MAP[0].length, H = MAP.length;
+let player, monster, toys, won, lost, blink, score;
+
+function isWall(x,y){ return MAP[y][x] === '#'; }
+
+function reset(){
+  toys = []; won=false; lost=false; blink=0; score=0;
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    if(MAP[y][x]==='S') player = {x, y, tx:x, ty:y, fx:x*TILE+20, fy:y*TILE+20};
+    if(MAP[y][x]==='M') monster = {x, y, tx:x, ty:y, fx:x*TILE+20, fy:y*TILE+20, speed:0.055, path:[], tick:0};
+    if(MAP[y][x]==='T') toys.push({x, y, got:false});
+  }
+}
+reset();
+
+const keys = {};
+addEventListener('keydown', e=>{ keys[e.key]='1'; if(e.key.startsWith('Arrow')) e.preventDefault(); });
+addEventListener('keyup', e=> delete keys[e.key]);
+
+function tryMove(ent, dx, dy, instant){
+  const nx = ent.tx+dx, ny = ent.ty+dy;
+  if(!isWall(nx,ny)){ ent.tx=nx; ent.ty=ny; if(instant){ent.fx=nx*TILE+20; ent.fy=ny*TILE+20;} return true; }
+  return false;
+}
+
+function bfs(sx,sy,tx,ty){
+  const q=[[sx,sy]], prev={}, seen={};
+  seen[sx+','+sy]=1;
+  while(q.length){
+    const [x,y]=q.shift();
+    if(x===tx&&y===ty){
+      const path=[];
+      let c=x+','+y;
+      while(c){ const [a,b]=c.split(',').map(Number); path.unshift([a,b]); c=prev[c]; }
+      path.shift();
+      return path;
+    }
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy, k=nx+','+ny;
+      if(!isWall(nx,ny) && !seen[k]){ seen[k]=1; prev[k]=x+','+y; q.push([nx,ny]); }
+    }
+  }
+  return [];
+}
+
+function update(){
+  if(won||lost) { if(keys.r){reset(); msg.textContent='';} return; }
+  let moved=false;
+  if(keys.ArrowUp||keys.w) { if(tryMove(player,0,-1)) moved=true; }
+  else if(keys.ArrowDown||keys.s) { if(tryMove(player,0,1)) moved=true; }
+  else if(keys.ArrowLeft||keys.a) { if(tryMove(player,-1,0)) moved=true; }
+  else if(keys.ArrowRight||keys.d) { if(tryMove(player,1,0)) moved=true; }
+
+  for(const t of toys){
+    if(!t.got && t.x===player.tx && t.y===player.ty){ t.got=true; score++; }
+  }
+  if(toys.every(t=>t.got) && MAP[player.ty][player.tx]==='E'){ won=true; msg.textContent='UCIEKŁEŚ! Wygrana! Naciśnij R aby zagrać ponownie'; }
+
+  // monster moves on grid via path
+  monster.tick++;
+  const spd = 10 - Math.min(score,7); // faster when more toys collected
+  if(monster.tick >= Math.max(2,spd)){
+    monster.tick=0;
+    if(!monster.path.length) monster.path = bfs(monster.tx,monster.ty,player.tx,player.ty);
+    const step = monster.path.shift();
+    if(step){ monster.tx=step[0]; monster.ty=step[1]; }
+  }
+  monster.fx += (monster.tx*TILE+20 - monster.fx)*monster.speed*3;
+  monster.fy += (monster.ty*TILE+20 - monster.fy)*monster.speed*3;
+
+  const d = Math.hypot(monster.fx-player.tx*TILE-20, monster.fy-player.ty*TILE-20);
+  if(d < TILE*0.6){ lost=true; msg.textContent='DOSTAŁ CIĘ HUGGY WUGGY! Naciśnij R aby zagrać ponownie'; }
+  hud.textContent = 'Zabawki: '+score+'/'+toys.length;
+}
+
+function draw(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // flashlight: lighten tiles near player
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const px=player.tx*TILE, py=player.ty*TILE;
+    const dist=Math.hypot(x*TILE+20-px-20, y*TILE+20-py-20);
+    const light = Math.max(0, 1 - dist/190);
+    if(MAP[y][x]==='#'){
+      ctx.fillStyle = `rgb(${20*light},${15*light},${25*light})`;
+      ctx.fillRect(x*TILE,y*TILE,TILE,TILE);
+    } else {
+      ctx.fillStyle = `rgb(${40*light+5},${35*light+5},${50*light+5})`;
+      ctx.fillRect(x*TILE,y*TILE,TILE,TILE);
+      if(MAP[y][x]==='E'){ ctx.fillStyle=`rgba(80,255,120,${light})`; ctx.fillRect(x*TILE+10,y*TILE+10,20,20); }
+    }
+  }
+  // toys
+  for(const t of toys){
+    if(t.got) continue;
+    const dist=Math.hypot(t.x-player.tx,t.y-player.ty);
+    const light=Math.max(0,1-dist*1.2);
+    if(light>0.05){
+      ctx.fillStyle=`rgba(255,220,60,${light})`;
+      ctx.beginPath(); ctx.arc(t.x*TILE+20,t.y*TILE+20,10,0,7); ctx.fill();
+    }
+  }
+  // player
+  ctx.fillStyle='#4af'; ctx.beginPath(); ctx.arc(player.tx*TILE+20,player.ty*TILE+20,12,0,7); ctx.fill();
+  // monster (only when close-ish)
+  const md=Math.hypot(monster.tx-player.tx,monster.ty-player.ty);
+  if(md<6){
+    const a=Math.max(0,1-md/5);
+    ctx.fillStyle=`rgba(170,30,190,${a})`;
+    ctx.beginPath(); ctx.arc(monster.fx,monster.fy,16,0,7); ctx.fill();
+    ctx.fillStyle=`rgba(255,50,50,${a})`;
+    ctx.fillRect(monster.fx-8,monster.fy-5,5,7); ctx.fillRect(monster.fx+3,monster.fy-5,5,7);
+  }
+  ctx.strokeStyle='#222'; ctx.lineWidth=1;
+  for(let x=0;x<=W;x++){ ctx.strokeRect(x*TILE,0,0,0); }
+}
+
+function loop(){ update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
