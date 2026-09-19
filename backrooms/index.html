@@ -40,7 +40,7 @@
   <div class="br"><span id="ts">00:00:00</span></div>
 </div>
   <div id="flick" style="display:none"></div>
-<div id="hud">WASD — chodzenie | Mysz — rozglądanie | SHIFT — bieg | ESC — pauza</div>
+<div id="hud">WASD — chodzenie | Mysz — rozglądanie | SHIFT — bieg | R — nowy świat | ESC — pauza</div>
 <div id="stamWrap"><div id="stamFill"></div></div>
 <div id="hint">Kliknij, aby przejąć mysz</div>
 <div id="pause"><div>PAUZA</div><small>kliknij albo ESC, żeby wrócić</small></div>
@@ -72,9 +72,13 @@ const SLOT = 9;                       // siatka "slotów" pokoi
 let map = new Uint8Array(MS*MS).fill(1);
 const at = (x,y)=> (x<0||y<0||x>=MS||y>=MS) ? 1 : map[y*MS+x];
 
-// deterministyczny hash dla danego slotu (świat zawsze taki sam)
+// LOSOWY SEED — za każdą grą inny układ (a w obrębie gry spójny)
+let SEED = (Math.random()*0x7fffffff)|0;
+
+// deterministyczny hash dla danego slotu (świat zawsze taki sam dla danego seeda)
 function h2(i,j,s){
-  let h = Math.imul(i|0, 374761393) + Math.imul(j|0, 668265263) + Math.imul(s|0, 1442695041);
+  let h = Math.imul(i|0, 374761393) + Math.imul(j|0, 668265263)
+        + Math.imul(s|0, 1442695041) + Math.imul(SEED, 2246822519);
   h = Math.imul(h ^ (h>>>13), 1274126177);
   return ((h ^ (h>>>16)) >>> 0) / 4294967296;
 }
@@ -584,6 +588,26 @@ function uploadWorldDirty(){
 }
 uploadWorldDirty();
 
+// nowy losowy świat (klawisz R): czyści mapę i generuje od nowa wokół gracza
+function reseedWorld(){
+  SEED = (Math.random()*0x7fffffff)|0;
+  map.fill(1);
+  madeSlots.clear();
+  lastSlotKey = '';
+  const ci = Math.floor(pX/SLOT), cj = Math.floor(pY/SLOT);
+  for(let j=cj-3;j<=cj+3;j++) for(let i=ci-3;i<=ci+3;i++) genSlot(i,j);
+  let best=null, bd=1e9;
+  for(let y=cj*SLOT-9;y<cj*SLOT+9;y++) for(let x=ci*SLOT-9;x<ci*SLOT+9;x++){
+    if(at(x,y)===0 && at(x+1,y)===0 && at(x,y+1)===0){
+      const d=(x+0.5-pX)*(x+0.5-pX)+(y+0.5-pY)*(y+0.5-pY);
+      if(d<bd){ bd=d; best={x:x+0.5,y:y+0.5}; }
+    }
+  }
+  if(best){ pX=best.x; pY=best.y; }
+  dirty = {x0:0,y0:0,x1:MS-1,y1:MS-1};
+  uploadWorldDirty();
+}
+
 // ===== SHADER VHS (post) + bufor sceny =====
 const progPost = gl.createProgram();
 gl.attachShader(progPost, sh(gl.VERTEX_SHADER, VS));
@@ -667,6 +691,7 @@ addEventListener('keydown',e=>{
   if(paused) return;
   keys[e.code]=true;
   if(['KeyW','KeyA','KeyS','KeyD'].includes(e.code)) e.preventDefault();
+  if(e.code==='KeyR'){ reseedWorld(); }
 });
 addEventListener('keyup',e=>keys[e.code]=false);
 pauseEl.addEventListener('click',()=>{ setPause(false); if(document.pointerLockElement!==cv) cv.requestPointerLock(); });
