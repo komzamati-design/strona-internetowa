@@ -67,7 +67,7 @@ setInterval(()=>{
 }, 500);
 
 // ===== ŚWIAT: NIESKOŃCZONA GENERACJA (1=ściana, 0=pusto) =====
-const MS = 1024;                      // bufor świata (komórek) wokół gracza
+const MS = 2048;                      // bufor świata (komórek) wokół gracza
 const SLOT = 9;                       // siatka "slotów" pokoi
 let map = new Uint8Array(MS*MS).fill(1);
 const at = (x,y)=> (x<0||y<0||x>=MS||y>=MS) ? 1 : map[y*MS+x];
@@ -145,23 +145,25 @@ function genSlot(i,j){
   }
 }
 
-// generuje sloty wokół gracza
+// generuje sloty wokół gracza DUŻO wcześniej niż gracz dojdzie —
+// dzięki temu żadna widoczna ściana nie znika mu przed nosem
+const VIEW_AHEAD = 12;                // slotów w każdą stronę (~108 komórek)
 let lastSlotKey = '';
 function ensureWorld(px,py){
   const ci = Math.floor(px/SLOT), cj = Math.floor(py/SLOT);
   const key = ci+'_'+cj;
   if(key === lastSlotKey) return false;
   lastSlotKey = key;
-  const R = 3;
+  const R = VIEW_AHEAD;
   for(let j=cj-R;j<=cj+R;j++) for(let i=ci-R;i<=ci+R;i++) genSlot(i,j);
   return true;
 }
 
-// start gracza: wolnе pole w okolicy środka
+// start gracza: wolne pole w okolicy środka
 let spawn = {x:MS/2+0.5, y:MS/2+0.5};
 {
   const ci = Math.floor(spawn.x/SLOT), cj = Math.floor(spawn.y/SLOT);
-  for(let j=cj-3;j<=cj+3;j++) for(let i=ci-3;i<=ci+3;i++) genSlot(i,j);
+  for(let j=cj-VIEW_AHEAD;j<=cj+VIEW_AHEAD;j++) for(let i=ci-VIEW_AHEAD;i<=ci+VIEW_AHEAD;i++) genSlot(i,j);
   let best=null, bd=1e9;
   for(let y=cj*SLOT-8;y<cj*SLOT+8;y++) for(let x=ci*SLOT-8;x<ci*SLOT+8;x++){
     if(at(x,y)===0 && at(x+1,y)===0 && at(x,y+1)===0){
@@ -194,7 +196,7 @@ uniform vec2 uDir;
 uniform float uTime, uPitch, uEye;
 const float TANH = 0.57735;   // FOV 60°
 const float WC = 1.35;        // wysokość sufitu
-const float MS = 1024.0;      // rozmiar bufora świata (musi się zgadzać z JS)
+const float MS = 2048.0;      // rozmiar bufora świata (musi się zgadzać z JS)
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float vnoise(vec2 p){
@@ -601,7 +603,7 @@ function reseedWorld(){
   madeSlots.clear();
   lastSlotKey = '';
   const ci = Math.floor(pX/SLOT), cj = Math.floor(pY/SLOT);
-  for(let j=cj-3;j<=cj+3;j++) for(let i=ci-3;i<=ci+3;i++) genSlot(i,j);
+  for(let j=cj-VIEW_AHEAD;j<=cj+VIEW_AHEAD;j++) for(let i=ci-VIEW_AHEAD;i<=ci+VIEW_AHEAD;i++) genSlot(i,j);
   let best=null, bd=1e9;
   for(let y=cj*SLOT-9;y<cj*SLOT+9;y++) for(let x=ci*SLOT-9;x<ci*SLOT+9;x++){
     if(at(x,y)===0 && at(x+1,y)===0 && at(x,y+1)===0){
