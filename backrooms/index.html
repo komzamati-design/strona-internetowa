@@ -6,7 +6,9 @@
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:monospace;}
   #c{display:block;width:100vw;height:100vh;cursor:crosshair;}
-  #minimap{position:fixed;top:10px;right:10px;z-index:6;image-rendering:pixelated;display:none;}
+  #minimap{position:fixed;top:12px;right:12px;width:168px;height:168px;z-index:6;
+           border:2px solid #b6a94e;border-radius:4px;background:rgba(0,0,0,.55);
+           box-shadow:0 0 14px rgba(0,0,0,.7);image-rendering:pixelated;}
   #hud{position:fixed;top:10px;left:10px;color:#c9b458;text-shadow:0 0 6px #000;user-select:none;font-size:14px;z-index:4;}
   #hint{position:fixed;left:50%;top:60%;transform:translateX(-50%);color:#d6c66a;text-shadow:0 0 8px #000;z-index:6;user-select:none;font-size:18px;}
   #pause{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
@@ -49,6 +51,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<canvas id="minimap" width="168" height="168"></canvas>
 <div id="vig"></div>
 <div id="vhs">
   <div class="tl" id="status">&#9654; PLAY</div>
@@ -787,6 +790,7 @@ gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, mapTex);
   const d = new Uint8Array(MS*MS*2);
   for(let i=0;i<MS*MS;i++){ d[i*2] = map[i]?255:0; d[i*2+1] = heights[i]; }
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RG8,MS,MS,0,gl.RG,gl.UNSIGNED_BYTE,d);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
@@ -814,6 +818,7 @@ function uploadWorldDirty(){
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, mapTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);   // KLUCZOWE: bez tego wiersze się odwracają
     gl.texSubImage2D(gl.TEXTURE_2D,0,x0,y0,w,h,gl.RG,gl.UNSIGNED_BYTE,buf);
   }
   dirty = null;
@@ -1118,6 +1123,7 @@ let stamina = 1.0;
 let won = false;
 const winEl = document.getElementById('win');
 const arrowEl = document.getElementById('arrow');
+const minimapEl = document.getElementById('minimap');
 let exhausted = false;
 const STAM_DRAIN = 0.30;     // /sek podczas biegu
 const STAM_REGEN = 0.20;     // /sek regeneracji
@@ -1261,6 +1267,44 @@ function loop(now){
       arrowEl.style.opacity = 0;
       if(arrowEl.style.display!=='none' && !arrowEl.style.opacity) arrowEl.style.display='none';
     }
+  }
+
+  // ===== MINIMAPA (rysowana z tych samych danych co kolizje) =====
+  if(minimapEl){
+    const mc = minimapEl.getContext('2d');
+    const MM = minimapEl.width, R = 26, cs = MM/(2*R+1);
+    mc.clearRect(0,0,MM,MM);
+    const cx0 = Math.floor(pX), cy0 = Math.floor(pY);
+    for(let j=-R;j<=R;j++){
+      for(let i=-R;i<=R;i++){
+        const cx = cx0+i, cy = cy0+j;
+        let col = '#0d0b06';
+        if(cx>=0 && cy>=0 && cx<MS && cy<MS){
+          const k = cy*MS+cx;
+          if(map[k]===0) col = '#8a7c2e';                    // podłoga
+          else if(heights[k]>0) col = '#d98a1e';             // schody (blok)
+          else col = '#241f10';                              // ściana
+        }
+        mc.fillStyle = col;
+        mc.fillRect((i+R)*cs, (j+R)*cs, cs+0.6, cs+0.6);
+      }
+    }
+    // Shrek
+    if(enemy && !caught){
+      mc.fillStyle='#7fae4b';
+      mc.beginPath();
+      mc.arc((enemy.x-cx0+R+0.5)*cs, (enemy.y-cy0+R+0.5)*cs, Math.max(2,cs*0.6), 0, Math.PI*2);
+      mc.fill();
+    }
+    // gracz + kierunek
+    const pxm = (pX-cx0+R+0.5)*cs, pym = (pY-cy0+R+0.5)*cs;
+    mc.strokeStyle='#ff4a3a'; mc.lineWidth=2;
+    mc.beginPath();
+    mc.moveTo(pxm, pym);
+    mc.lineTo(pxm + Math.cos(ang)*cs*2.2, pym + Math.sin(ang)*cs*2.2);
+    mc.stroke();
+    mc.fillStyle='#ff4a3a';
+    mc.beginPath(); mc.arc(pxm, pym, Math.max(2,cs*0.55), 0, Math.PI*2); mc.fill();
   }
 
   requestAnimationFrame(loop);
