@@ -129,8 +129,9 @@ function markDirty(x,y){
 function carve(x,y){
   if(x<1||y<1||x>=MS-1||y>=MS-1) return;
   const i=y*MS+x;
-  if(map[i]===0) return;
-  map[i]=0; markDirty(x,y);
+  if(map[i]===0 && heights[i]===0) return;
+  map[i]=0; heights[i]=0;      // czyścimy też wysokość (inaczej zostają "niewidzialne" bloki)
+  markDirty(x,y);
 }
 function corridorH(a,b){
   if(!a.ex||!b.ex) return;
@@ -943,7 +944,7 @@ addEventListener('pointerlockchange',()=>{ if(document.pointerLockElement!==cv &
 addEventListener('mousemove',e=>{ if(document.pointerLockElement===cv){ ang += e.movementX*0.0025; pitch = Math.max(-0.7,Math.min(0.7,pitch + e.movementY*0.002)); }});
 
 // ===== KOLIZJE (AABB gracza + małe kroki = brak przenikania przez ściany) =====
-const PR = 0.27;                                  // promień gracza
+const PR = 0.32;                                  // promień gracza (trzyma dystans od ścian)
 const MAXSTEP = 0.19;                             // maks. różnica wysokości, na jaką wejdziemy
 function canStand(x,y){
   return !solid(x-PR,y-PR) && !solid(x+PR,y-PR) &&
@@ -957,8 +958,9 @@ function groundAt(x,y){
   for(const p of pts){
     const cx = Math.floor(x+p[0]), cy = Math.floor(y+p[1]);
     if(cx<0||cy<0||cx>=MS||cy>=MS) continue;
-    const hv = heights[cy*MS+cx];
-    if(hv>0){ const hh = hv/255*HMAX; if(hh>g) g = hh; }
+    const i = cy*MS+cx;
+    // liczy się tylko prawdziwy blok (ściana + wysokość)
+    if(map[i]===1 && heights[i]>0){ const hh = heights[i]/255*HMAX; if(hh>g) g = hh; }
   }
   return g;
 }
@@ -1170,7 +1172,7 @@ function loop(now){
   // gdyby gracz znalazł się w ścianie — wysuń go BARDZO krótkimi krokami (bez przechodzenia przez ściany)
   if(!canStand(pX,pY)){
     let fixed = false;
-    for(let rr=0.05; rr<=0.60 && !fixed; rr+=0.05){
+    for(let rr=0.05; rr<=0.40 && !fixed; rr+=0.05){
       for(let a=0;a<16;a++){
         const ax=Math.cos(a*0.392699)*rr, ay=Math.sin(a*0.392699)*rr;
         if(canStand(pX+ax,pY+ay)){ pX+=ax; pY+=ay; fixed=true; break; }
