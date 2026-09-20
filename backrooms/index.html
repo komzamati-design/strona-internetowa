@@ -228,6 +228,11 @@ function ensureWorld(px,py){
   lastSlotKey = key;
   const R = VIEW_AHEAD;
   for(let j=cj-R;j<=cj+R;j++) for(let i=ci-R;i<=ci+R;i++) genSlot(i,j);
+  // po generacji wysyłamy CAŁY wygenerowany obszar do tekstury —
+  // dzięki temu obraz i kolizje nigdy się nie rozjadą
+  const gx0 = Math.max(0, (ci-R)*SLOT-2), gx1 = Math.min(MS-1, (ci+R+1)*SLOT+2);
+  const gy0 = Math.max(0, (cj-R)*SLOT-2), gy1 = Math.min(MS-1, (cj+R+1)*SLOT+2);
+  dirty = {x0:gx0, y0:gy0, x1:gx1, y1:gy1};
   // Gwarancja: jeśli w pobliżu nie ma żadnych schodów, postaw jedne w okolicy
   let near = false;
   for(const s of stairsList){ if(Math.hypot(s.x-px, s.y-py) < 70){ near = true; break; } }
@@ -287,6 +292,7 @@ uniform vec2 uWallRep, uFloorRep, uCeilRep;
 uniform vec3 uEnemy;          // pozycja Shreka (x, y-wysokość podstawy, z)
 uniform vec2 uEnemySize;      // (połowa szerokości, wysokość)
 uniform float uHasEnemy;
+uniform float uEnemyBob;      // kołysanie przy chodzeniu
 uniform vec2 uRes, uPos;
 uniform vec2 uDir;
 uniform float uTime, uPitch, uEye, uStairShow;
@@ -524,7 +530,7 @@ void main(){
   float tW=1e9; int side=0; int hitK=0;  // 0=brak 1=pełna ściana 2=bok bloku 3=góra bloku
   float blockH = 0.0;                     // wysokość trafionego bloku
   float tTopHit = 1e9;                    // odległość do górnej płaszczyzny bloku
-  for(int i=0;i<128;i++){
+  for(int i=0;i<160;i++){
     float tEntry;
     if(sdx<sdz){ tEntry = sdx; sdx+=tdx; mx+=sx; side=0; }
     else       { tEntry = sdz; sdz+=tdz; mz+=sz; side=1; }
@@ -628,6 +634,12 @@ void main(){
   int mat = (kind==1) ? 1 : ((kind==0 || kind==3) ? 0 : 2);
   vec3 col = albedo * lit(P, N, rd, mat) + glow;
 
+  // cień kontaktowy Shreka na podłodze
+  if(kind==0 && uHasEnemy > 0.5){
+    float dsh = length(P.xz - uEnemy.xz);
+    col *= 1.0 - 0.55*(1.0 - smoothstep(0.12, 0.46, dsh));
+  }
+
   // ===== SHREK (billboard 3D z okluzją przez ściany) =====
   if(uHasEnemy > 0.5){
     vec2 rel = uEnemy.xz - uPos;
@@ -637,7 +649,7 @@ void main(){
       vec2 rdir = vec2(-dir.y, dir.x);
       float lateral = dot(rel, rdir);
       float su = (lateral/depth)/(0.57735*aspect);
-      float sv = ((uEnemy.y + uEnemySize.y*0.5) - uEye)/depth/0.57735;
+      float sv = ((uEnemy.y + uEnemySize.y*0.5 + uEnemyBob) - uEye)/depth/0.57735;
       float hw = (uEnemySize.x/depth)/(0.57735*aspect);
       float hh = (uEnemySize.y*0.5/depth)/0.57735;
       if(abs(uv.x-su) < hw && abs(uv.y-sv) < hh){
@@ -761,7 +773,7 @@ gl.linkProgram(prog);
 if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) shErr('BLAD LINKU: '+gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 const U = {};
-for(const n of ['uMap','uRes','uPos','uDir','uTime','uPitch','uEye','uWallTex','uFloorTex','uCeilTex','uHasTex','uWallRep','uFloorRep','uCeilRep','uSprite','uEnemy','uEnemySize','uHasEnemy']) U[n]=gl.getUniformLocation(prog,n);
+for(const n of ['uMap','uRes','uPos','uDir','uTime','uPitch','uEye','uWallTex','uFloorTex','uCeilTex','uHasTex','uWallRep','uFloorRep','uCeilRep','uSprite','uEnemy','uEnemySize','uHasEnemy','uEnemyBob']) U[n]=gl.getUniformLocation(prog,n);
 
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
@@ -980,37 +992,73 @@ const caughtEl = document.getElementById('caught');
 
 // rysujemy Shreka proceduralnie (przezroczyste tło, widok z przodu)
 function makeShrekSprite(){
-  const c = document.createElement('canvas'); c.width = 256; c.height = 512;
+  const c = document.createElement('canvas'); c.width = 320; c.height = 640;
   const g = c.getContext('2d');
-  const E = (x,y,rx,ry,col)=>{ g.fillStyle=col; g.beginPath(); g.ellipse(x,y,rx,ry,0,0,Math.PI*2); g.fill(); };
-  const SKIN='#7fae4b', SKIN_D='#6d9a3f', VEST='#6b4a24', VEST_D='#553a1c', WHITE='#f2f0e6';
-  // nogi (brązowe spodnie)
-  g.fillStyle='#4a3418'; g.fillRect(84,360,36,150); g.fillRect(136,360,36,150);
+  const E = (x,y,rx,ry,col,rot)=>{ g.fillStyle=col; g.beginPath(); g.ellipse(x,y,rx,ry,rot||0,0,Math.PI*2); g.fill(); };
+  const grad = (x0,y0,x1,y1,stops)=>{
+    const gr = g.createLinearGradient(x0,y0,x1,y1);
+    stops.forEach(s=>gr.addColorStop(s[0],s[1]));
+    return gr;
+  };
+  const SKIN='#8bb84e', SKIN_M='#78a441', SKIN_D='#5f8a33', SKIN_L='#a3cd63';
+  const VEST='#7a5528', VEST_D='#5c3f1c', SHIRT='#d8cfae', PANTS='#4b3418';
+
+  // cień pod nogami
+  E(160,624,86,20,'rgba(0,0,0,0.35)');
+
+  // nogi
+  g.fillStyle = grad(120,430,200,620,[[0,PANTS],[1,'#33230f']]);
+  g.fillRect(112,440,44,168); g.fillRect(164,440,44,168);
   // buty
-  g.fillStyle='#2b1f10'; g.fillRect(76,486,52,26); g.fillRect(128,486,52,26);
-  // tułów (zielony) + kamizelka
-  g.fillStyle=SKIN; g.beginPath(); g.ellipse(128,300,74,104,0,0,Math.PI*2); g.fill();
-  g.fillStyle=VEST; g.beginPath(); g.ellipse(128,300,62,96,0,0,Math.PI*2); g.fill();
-  g.fillStyle=VEST_D; g.fillRect(122,214,12,180);
+  g.fillStyle='#2a1d0e';
+  g.beginPath(); g.ellipse(126,616,34,20,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(194,616,34,20,0,0,Math.PI*2); g.fill();
+
+  // tułów (koszula + kamizelka)
+  g.fillStyle = grad(60,250,260,470,[[0,SKIN_L],[0.5,SKIN],[1,SKIN_D]]);
+  g.beginPath(); g.ellipse(160,350,88,120,0,0,Math.PI*2); g.fill();
+  g.fillStyle = grad(90,260,230,470,[[0,VEST],[1,VEST_D]]);
+  g.beginPath(); g.ellipse(160,352,72,112,0,0,Math.PI*2); g.fill();
+  g.fillStyle=SHIRT; g.beginPath(); g.ellipse(160,300,40,44,0,0,Math.PI*2); g.fill();
+  // sznurówki kamizelki
+  g.strokeStyle='#e8dcb0'; g.lineWidth=5; g.lineCap='round';
+  for(let i=0;i<4;i++){ const y=300+i*30; g.beginPath(); g.moveTo(126,y); g.lineTo(194,y+10); g.moveTo(194,y); g.lineTo(126,y+10); g.stroke(); }
   // ramiona
-  g.fillStyle=SKIN_D; g.beginPath(); g.ellipse(52,290,26,84,0.18,0,Math.PI*2); g.fill();
-  g.beginPath(); g.ellipse(204,290,26,84,-0.18,0,Math.PI*2); g.fill();
+  g.fillStyle = grad(30,260,110,470,[[0,SKIN],[1,SKIN_D]]);
+  g.beginPath(); g.ellipse(66,360,34,110,0.16,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(254,360,34,110,-0.16,0,Math.PI*2); g.fill();
+  // dłonie
+  E(46,466,30,30,SKIN_M); E(274,466,30,30,SKIN_M);
+
   // uszy (trąbki)
-  E(60,150,20,15,SKIN_D); E(196,150,20,15,SKIN_D);
+  g.fillStyle=SKIN_D;
+  g.beginPath(); g.ellipse(70,186,26,18,-0.25,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(250,186,26,18,0.25,0,Math.PI*2); g.fill();
+  E(62,184,12,9,'#4d7329'); E(258,184,12,9,'#4d7329');
+
   // głowa
-  E(128,168,74,80,SKIN);
-  E(128,196,66,54,SKIN);       // policzki
+  g.fillStyle = grad(80,90,240,290,[[0,SKIN_L],[0.45,SKIN],[1,SKIN_D]]);
+  g.beginPath(); g.ellipse(160,205,94,102,0,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(160,244,84,66,0,0,Math.PI*2); g.fill();
+  // żuchwa
+  g.fillStyle=SKIN_M; g.beginPath(); g.ellipse(160,272,70,42,0,0,Math.PI*2); g.fill();
+
   // brwi
-  g.strokeStyle='#3a2a12'; g.lineWidth=9; g.lineCap='round';
-  g.beginPath(); g.moveTo(88,132); g.lineTo(118,138); g.moveTo(168,132); g.lineTo(138,138); g.stroke();
-  // oczy
-  E(104,158,17,20,WHITE); E(152,158,17,20,WHITE);
-  E(104,160,8,10,'#1b1408'); E(152,160,8,10,'#1b1408');
+  g.strokeStyle='#40300f'; g.lineWidth=12; g.lineCap='round';
+  g.beginPath(); g.moveTo(96,158); g.lineTo(136,168); g.moveTo(224,158); g.lineTo(184,168); g.stroke();
+  // oczy (gałki + źrenice + błysk)
+  E(126,196,22,25,'#f4f2e6'); E(194,196,22,25,'#f4f2e6');
+  E(128,199,10,13,'#241a08'); E(196,199,10,13,'#241a08');
+  E(132,194,4,5,'#ffffff'); E(200,194,4,5,'#ffffff');
   // nos
-  E(128,188,12,9,SKIN_D);
+  E(160,236,15,11,SKIN_D); E(152,238,4,3,'#3f5a22'); E(168,238,4,3,'#3f5a22');
   // usta
-  g.fillStyle='#3a1f14'; g.beginPath(); g.ellipse(128,216,36,14,0,0,Math.PI*2); g.fill();
-  g.fillStyle='#c9b18c'; g.fillRect(96,208,64,6);
+  g.fillStyle='#4a2418'; g.beginPath(); g.ellipse(160,272,46,18,0,0,Math.PI*2); g.fill();
+  g.fillStyle='#d9c39a';
+  for(let i=0;i<5;i++){ g.fillRect(126+i*16,258,11,9); }
+  // obrys (delikatny, dla czytelności na jasnej ścianie)
+  g.strokeStyle='rgba(30,40,15,0.55)'; g.lineWidth=3;
+  g.beginPath(); g.ellipse(160,205,94,102,0,0,Math.PI*2); g.stroke();
   return c;
 }
 
@@ -1166,6 +1214,7 @@ function loop(now){
   if(enemy && !caught){
     gl.uniform1f(U.uHasEnemy, 1.0);
     gl.uniform3f(U.uEnemy, enemy.x, 0.0, enemy.y);
+    gl.uniform1f(U.uEnemyBob, Math.abs(Math.sin(now/1000*6.0))*0.03);   // kołysanie
   } else {
     gl.uniform1f(U.uHasEnemy, 0.0);
   }
