@@ -1348,8 +1348,93 @@ function loop(now){
 
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+
+// ===== SAMOTEST (uruchamiany dopisując ?test=1 do adresu) =====
+function runSelfTest(){
+  const out = [];
+  // 1) spójność tekstury świata (GPU) z tablicami kolizji (JS)
+  const w = MS, h = MS;
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0+6); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const tprog = gl.createProgram();
+  gl.attachShader(tprog, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(tprog, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; out vec4 O; uniform sampler2D uMap;
+void main(){ ivec2 c = ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)); O = texelFetch(uMap,c,0); }`));
+  gl.linkProgram(tprog);
+  gl.useProgram(tprog);
+  gl.uniform1i(gl.getUniformLocation(tprog,'uMap'), 6);
+  gl.activeTexture(gl.TEXTURE0+6); gl.bindTexture(gl.TEXTURE_2D, mapTex);
+  gl.viewport(0,0,w,h);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  const px = new Uint8Array(w*h*4);
+  gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);
+  let badWall=0, badH=0, firstBad='';
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const i = y*w+x;
+    const r = px[i*4], g = px[i*4+1];
+    if(r !== (map[i]?255:0)){ badWall++; if(!firstBad) firstBad=x+','+y+' tex='+r+' js='+(map[i]?255:0); }
+    if(Math.abs(g - heights[i]) > 1) badH++;
+  }
+  out.push('texWallMismatch='+badWall);
+  out.push('texHeightMismatch='+badH);
+  if(firstBad) out.push('first='+firstBad);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // 2) test ruchu: 20k losowych kroków, czy gracz wchodzi w ścianę
+  const ox=pX, oy=pY;
+  let insideWall=0, firstInside='';
+  for(let step=0; step<20000; step++){
+    const a = Math.random()*Math.PI*2;
+    movePlayer(Math.cos(a)*0.06, Math.sin(a)*0.06);
+    const cx=pX|0, cy=pY|0;
+    const bad = !canStand(pX,pY) || (map[cy*MS+cx]===1 && heights[cy*MS+cx]===0);
+    if(bad){ insideWall++; if(!firstInside) firstInside=pX.toFixed(2)+','+pY.toFixed(2)+' cell='+cx+','+cy; }
+  }
+  out.push('walkInsideWall='+insideWall);
+  if(firstInside) out.push('firstInside='+firstInside);
+  pX=ox; pY=oy;
+  // 3) schody: czy każda komórka to blok, a margines to podłoga (czyli nie w ścianie)
+  let stairsBad=0, stairsBadFirst='';
+  for(const s of stairsList){
+    for(let y=s.y0-1; y<=s.y1+1; y++){
+      for(let x=s.x0-1; x<=s.x1+1; x++){
+        const k = y*MS+x;
+        const inside = (x>=s.x0 && x<=s.x1 && y>=s.y0 && y<=s.y1);
+        if(inside){
+          if(!(map[k]===1 && heights[k]>0)){ stairsBad++; if(!stairsBadFirst) stairsBadFirst='brak bloku '+x+','+y; }
+        } else {
+          if(!(map[k]===0)){ stairsBad++; if(!stairsBadFirst) stairsBadFirst='sciana w marginesie '+x+','+y; }
+        }
+      }
+    }
+  }
+  out.push('stairs='+stairsList.length);
+  out.push('stairsBad='+stairsBad);
+  if(stairsBadFirst) out.push('stairsBadFirst='+stairsBadFirst);
+  // 4) otwarta przestrzeń (kontrola, że mapa nie jest pusta)
+  let openCells=0;
+  for(let i=0;i<map.length;i++) if(map[i]===0) openCells++;
+  out.push('openCells='+openCells);
+  const d = document.createElement('div');
+  d.id='testout';
+  d.textContent = 'TEST|'+out.join('|');
+  d.style.cssText='position:fixed;left:0;bottom:0;z-index:99;color:#0f0;background:#000;font:12px monospace;padding:4px';
+  document.body.appendChild(d);
+  document.title = 'TEST|'+out.join('|');
 }
+if(location.search.indexOf('test=1') >= 0){
+  setTimeout(runSelfTest, 400);            // tryb testowy: bez pętli renderowania
+} else {
+  requestAnimationFrame(loop);
+}
+}
+
 </script>
 </body>
 </html>
