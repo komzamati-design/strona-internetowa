@@ -153,30 +153,33 @@ function corridorV(a,b){
 
 // lista znanych schodów (do strzałek) — trzymamy tylko kilka najbliższych
 const stairsList = [];
-// stawia schody 3D w pokoju (zawsze W ŚRODKU pokoju, nigdy w ścianie)
+// stawia schody 3D W POKOJU (na podłodze pokoju — nigdy w ścianie)
 function placeStairs(r){
   if(!r.ex || r.w < NSTEPS+2 || r.h < 4) return false;
   // dopasuj pozycję tak, by całe schody (stopnie + platforma) były w pokoju
   let sx0 = r.x + 1;
-  const maxX = r.x + r.w - (NSTEPS+2);          // ostatnia komórka stopni w pokoju
+  const maxX = r.x + r.w - (NSTEPS+2);
   if(sx0 > maxX) sx0 = maxX;
   let sy0 = r.y + 1 + Math.floor(h2(r.cx,r.cy,67)*Math.max(1, r.h-4));
-  const maxY = r.y + r.h - 3;                   // 2 komórki szerokości + margines
+  const maxY = r.y + r.h - 3;
   if(sy0 > maxY) sy0 = maxY;
   if(sx0 < r.x || sy0 < r.y) return false;
   const cxT = sx0 + NSTEPS, cyT = sy0;
   if(Math.hypot(cxT - playerPos.x, cyT - playerPos.y) < 4.0) return false;
-  // nie stawiaj drugi raz w tym samym miejscu
   for(const s of stairsList){ if(Math.abs(s.x-cxT)<3 && Math.abs(s.y-cyT)<3) return true; }
-  // najpierw wyczyść teren stopni (żeby nie nachodziły na ściany pokoju)
+
+  // WALIDACJA: każda komórka schodów (z marginesem) musi być PODŁOGĄ pokoju,
+  // czyli nie może być ścianą — inaczej w ogóle nie stawiamy schodów
   for(let s=-1;s<=NSTEPS+1;s++){
     for(let dz=-1;dz<=2;dz++){
       const cx2 = sx0+s, cy2 = sy0+dz;
-      if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) continue;
-      if(cx2 < r.x || cx2 >= r.x+r.w || cy2 < r.y || cy2 >= r.y+r.h) continue;
-      map[cy2*MS+cx2]=0; heights[cy2*MS+cx2]=0; markDirty(cx2,cy2);
+      if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) return false;
+      if(cx2 < r.x || cx2 >= r.x+r.w || cy2 < r.y || cy2 >= r.y+r.h) return false;
+      const k = cy2*MS+cx2;
+      if(map[k]===1 && heights[k]===0) return false;   // tu jest ściana → nie stawiamy
     }
   }
+  // budowa stopni
   const hTop = hByte(TOP_H);
   for(let s=0;s<NSTEPS;s++){
     const hh = hByte(STEP_H*(s+1));
@@ -190,7 +193,7 @@ function placeStairs(r){
     const cx2 = sx0+NSTEPS, cy2 = sy0+dz;
     map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hTop; markDirty(cx2,cy2);
   }
-  stairsList.push({x: sx0+0.5, y: sy0+1.0});
+  stairsList.push({x: sx0+0.5, y: sy0+1.0, top:{x:sx0+NSTEPS+0.5, y:sy0+1.0}});
   if(stairsList.length > 24) stairsList.shift();
   return true;
 }
@@ -1295,6 +1298,29 @@ function loop(now){
       mc.beginPath();
       mc.arc((enemy.x-cx0+R+0.5)*cs, (enemy.y-cy0+R+0.5)*cs, Math.max(2,cs*0.6), 0, Math.PI*2);
       mc.fill();
+    }
+    // ===== SCHODY na minimapie: pulsujący marker + strzałka na krawędzi =====
+    const pulse = 0.6 + 0.4*Math.sin(now/1000*4.0);
+    for(const s of stairsList){
+      const tx = (s.top ? s.top.x : s.x) - cx0, ty = (s.top ? s.top.y : s.y) - cy0;
+      const inView = Math.abs(tx) <= R && Math.abs(ty) <= R;
+      const mx = (tx+R+0.5)*cs, my = (ty+R+0.5)*cs;
+      if(inView){
+        mc.strokeStyle = 'rgba(255,190,60,'+pulse.toFixed(2)+')';
+        mc.lineWidth = 2;
+        mc.beginPath(); mc.arc(mx, my, Math.max(3, cs*1.5), 0, Math.PI*2); mc.stroke();
+        mc.fillStyle = '#ffd24a';
+        mc.beginPath(); mc.arc(mx, my, Math.max(2, cs*0.7), 0, Math.PI*2); mc.fill();
+      } else {
+        // strzałka na krawędzi minimapy w stronę schodów
+        const a = Math.atan2(ty, tx);
+        const ex = MM/2 + Math.cos(a)*(MM/2-9), ey = MM/2 + Math.sin(a)*(MM/2-9);
+        mc.save();
+        mc.translate(ex, ey); mc.rotate(a);
+        mc.fillStyle = 'rgba(255,190,60,'+(0.55+0.45*pulse).toFixed(2)+')';
+        mc.beginPath(); mc.moveTo(7,0); mc.lineTo(-5,-5); mc.lineTo(-5,5); mc.closePath(); mc.fill();
+        mc.restore();
+      }
     }
     // gracz + kierunek
     const pxm = (pX-cx0+R+0.5)*cs, pym = (pY-cy0+R+0.5)*cs;
