@@ -23,6 +23,11 @@
        font-family:monospace;font-size:64px;letter-spacing:14px;text-shadow:0 0 24px #ffb545,0 0 60px #ff8a00;
        z-index:9;user-select:none;}
   #win small{font-size:17px;letter-spacing:3px;color:#e0cf7a;margin-top:18px;text-shadow:0 0 10px #000;}
+  #caught{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+       background:radial-gradient(circle at center, rgba(90,0,0,.6), rgba(0,0,0,.92));color:#ff5b4a;
+       font-family:monospace;font-size:58px;letter-spacing:10px;text-shadow:0 0 26px #ff2a00,0 0 70px #a00;
+       z-index:10;user-select:none;}
+  #caught small{font-size:17px;letter-spacing:3px;color:#e6b0a2;margin-top:18px;text-shadow:0 0 10px #000;}
   #arrow{position:fixed;left:50%;top:56%;transform:translate(-50%,-50%);transform-origin:50% 50%;
          z-index:7;display:none;pointer-events:none;opacity:0;transition:opacity .35s;}
   #arrow i{display:block;width:0;height:0;margin:2px auto;
@@ -58,6 +63,7 @@
 <div id="arrow"><i></i><i></i><i></i></div>
 <div id="pause"><div>PAUZA</div><small>kliknij albo ESC, żeby wrócić</small></div>
 <div id="win"><div>WYGRANA</div><small>dotarłeś na szczyt schodów — naciśnij R, aby zagrać ponownie</small></div>
+<div id="caught"><div>SHREK CIĘ DORWAŁ</div><small>naciśnij R, aby zagrać ponownie</small></div>
 <script src="textures.js"></script>
 <script>
 const cv = document.getElementById('c');
@@ -143,30 +149,43 @@ function corridorV(a,b){
 
 // lista znanych schodów (do strzałek) — trzymamy tylko kilka najbliższych
 const stairsList = [];
-// stawia schody 3D w pokoju (jeśli się mieszczą i nie na graczu)
+// stawia schody 3D w pokoju (zawsze W ŚRODKU pokoju, nigdy w ścianie)
 function placeStairs(r){
-  if(!r.ex || r.w < NSTEPS+3 || r.h < 4) return false;
-  const sx0 = r.x + 1;
-  const sy0 = r.y + 1 + Math.floor(h2(r.cx,r.cy,67)*Math.max(1, r.h-4));
+  if(!r.ex || r.w < NSTEPS+2 || r.h < 4) return false;
+  // dopasuj pozycję tak, by całe schody (stopnie + platforma) były w pokoju
+  let sx0 = r.x + 1;
+  const maxX = r.x + r.w - (NSTEPS+2);          // ostatnia komórka stopni w pokoju
+  if(sx0 > maxX) sx0 = maxX;
+  let sy0 = r.y + 1 + Math.floor(h2(r.cx,r.cy,67)*Math.max(1, r.h-4));
+  const maxY = r.y + r.h - 3;                   // 2 komórki szerokości + margines
+  if(sy0 > maxY) sy0 = maxY;
+  if(sx0 < r.x || sy0 < r.y) return false;
   const cxT = sx0 + NSTEPS, cyT = sy0;
   if(Math.hypot(cxT - playerPos.x, cyT - playerPos.y) < 4.0) return false;
   // nie stawiaj drugi raz w tym samym miejscu
   for(const s of stairsList){ if(Math.abs(s.x-cxT)<3 && Math.abs(s.y-cyT)<3) return true; }
+  // najpierw wyczyść teren stopni (żeby nie nachodziły na ściany pokoju)
+  for(let s=-1;s<=NSTEPS+1;s++){
+    for(let dz=-1;dz<=2;dz++){
+      const cx2 = sx0+s, cy2 = sy0+dz;
+      if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) continue;
+      if(cx2 < r.x || cx2 >= r.x+r.w || cy2 < r.y || cy2 >= r.y+r.h) continue;
+      map[cy2*MS+cx2]=0; heights[cy2*MS+cx2]=0; markDirty(cx2,cy2);
+    }
+  }
+  const hTop = hByte(TOP_H);
   for(let s=0;s<NSTEPS;s++){
     const hh = hByte(STEP_H*(s+1));
     for(let dz=0;dz<2;dz++){
       const cx2 = sx0+s, cy2 = sy0+dz;
-      if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) continue;
       map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hh; markDirty(cx2,cy2);
     }
   }
   // platforma na szczycie
   for(let dz=0;dz<2;dz++){
     const cx2 = sx0+NSTEPS, cy2 = sy0+dz;
-    if(cx2<1||cy2<1||cx2>=MS-1||cy2>=MS-1) continue;
-    map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hByte(TOP_H); markDirty(cx2,cy2);
+    map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hTop; markDirty(cx2,cy2);
   }
-  // środek pierwszego stopnia (punkt orientacyjny dla strzałek)
   stairsList.push({x: sx0+0.5, y: sy0+1.0});
   if(stairsList.length > 24) stairsList.shift();
   return true;
@@ -262,11 +281,16 @@ precision highp float;
 out vec4 O;
 uniform sampler2D uMap;
 uniform sampler2D uWallTex, uFloorTex, uCeilTex;
+uniform sampler2D uSprite;
 uniform int uHasTex;
 uniform vec2 uWallRep, uFloorRep, uCeilRep;
+uniform vec3 uEnemy;          // pozycja Shreka (x, y-wysokość podstawy, z)
+uniform vec2 uEnemySize;      // (połowa szerokości, wysokość)
+uniform float uHasEnemy;
 uniform vec2 uRes, uPos;
 uniform vec2 uDir;
-uniform float uTime, uPitch, uEye;
+uniform float uTime, uPitch, uEye, uStairShow;
+uniform vec2 uStairDir;
 const float TANH = 0.57735;   // FOV 60°
 const float WC = 1.35;        // wysokość sufitu
 const float MS = 2048.0;      // rozmiar bufora świata (musi się zgadzać z JS)
@@ -444,6 +468,37 @@ vec3 emitter(vec2 p, vec2 cellId){
   return vec3(0.58,0.58,0.56)*1.02;
 }
 
+// strzałka MALOWANA NA PODŁODZE — prowadzi do schodów (okresowo widoczna)
+float floorArrow(vec2 wp){
+  if(uStairShow < 0.01) return 0.0;
+  vec2 cellId = floor(wp);
+  vec2 rel = cellId - floor(uPos);
+  float dist = length(rel);
+  if(dist < 1.0 || dist > 13.0) return 0.0;
+  if(mod(cellId.x*3.0 + cellId.y*7.0, 5.0) > 0.6) return 0.0;
+  vec2 lq = fract(wp) - 0.5;
+  vec2 d = uStairDir;
+  vec2 rgt = vec2(-d.y, d.x);
+  vec2 q = vec2(dot(lq, rgt), dot(lq, d));      // q.y = wzdłuż kierunku
+  // grot (trójkąt)
+  float tri = 0.0;
+  if(q.y > 0.04 && q.y < 0.36){
+    float t = (0.36 - q.y)/0.32;
+    float hw = t*0.20;
+    tri = 1.0 - smoothstep(hw-0.025, hw+0.025, abs(q.x));
+  }
+  // ogon
+  float st = 0.0;
+  {
+    float w = 0.075;
+    float a = 1.0 - smoothstep(w-0.02, w+0.02, abs(q.x));
+    float b = smoothstep(-0.36,-0.30,q.y)*(1.0-smoothstep(0.02,0.08,q.y));
+    st = a*b;
+  }
+  float shape = clamp(max(tri, st), 0.0, 1.0);
+  return shape * uStairShow * (1.0 - dist/13.0);
+}
+
 void main(){
   vec2 uv = vec2( (gl_FragCoord.x/uRes.x*2.0-1.0)*(uRes.x/uRes.y), gl_FragCoord.y/uRes.y*2.0-1.0 );
   vec2 dir = uDir;
@@ -579,6 +634,34 @@ void main(){
   }
   int mat = (kind==1) ? 1 : ((kind==0 || kind==3) ? 0 : 2);
   vec3 col = albedo * lit(P, N, rd, mat);
+
+  // ===== SHREK (billboard 3D z okluzją przez ściany) =====
+  if(uHasEnemy > 0.5){
+    vec2 rel = uEnemy.xz - uPos;
+    float depth = dot(rel, dir);
+    if(depth > 0.12){
+      float aspect = uRes.x/uRes.y;
+      vec2 rdir = vec2(-dir.y, dir.x);
+      float lateral = dot(rel, rdir);
+      float su = (lateral/depth)/(0.57735*aspect);
+      float sv = ((uEnemy.y + uEnemySize.y*0.5) - uEye)/depth/0.57735;
+      float hw = (uEnemySize.x/depth)/(0.57735*aspect);
+      float hh = (uEnemySize.y*0.5/depth)/0.57735;
+      if(abs(uv.x-su) < hw && abs(uv.y-sv) < hh){
+        vec2 tc = vec2((uv.x-su)/(2.0*hw)+0.5, 0.5+(uv.y-sv)/(2.0*hh));
+        vec4 sp = texture(uSprite, tc);
+        float denom = max(dot(rd, vec3(dir.x,0.,dir.y)), 1e-3);
+        float tPlane = depth/denom;                 // odległość wzdłuż promienia
+        if(sp.a > 0.35 && tPlane < t + 0.02){       // zasłaniany przez ściany
+          vec3 eMid = vec3(uEnemy.x, uEnemy.y + uEnemySize.y*0.5, uEnemy.z);
+          vec3 toCam = normalize(vec3(uPos.x,0.,uPos.y) - eMid);
+          vec3 lgt = lit(eMid, toCam, rd, 2) + vec3(0.18,0.16,0.10);
+          col = sp.rgb * lgt * 1.15;
+          t = tPlane;
+        }
+      }
+    }
+  }
   // delikatne przygaszanie z odległością (bez mgły)
   col *= clamp(1.60 - t*0.032, 0.55, 1.60);
   // tone map
@@ -685,7 +768,7 @@ gl.linkProgram(prog);
 if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) shErr('BLAD LINKU: '+gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 const U = {};
-for(const n of ['uMap','uRes','uPos','uDir','uTime','uPitch','uEye','uWallTex','uFloorTex','uCeilTex','uHasTex','uWallRep','uFloorRep','uCeilRep']) U[n]=gl.getUniformLocation(prog,n);
+for(const n of ['uMap','uRes','uPos','uDir','uTime','uPitch','uEye','uWallTex','uFloorTex','uCeilTex','uHasTex','uWallRep','uFloorRep','uCeilRep','uSprite','uEnemy','uEnemySize','uHasEnemy']) U[n]=gl.getUniformLocation(prog,n);
 
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
@@ -750,6 +833,8 @@ function reseedWorld(){
     }
   }
   if(best){ pX=best.x; pY=best.y; }
+  caught = false; caughtEl.style.display='none';
+  enemy = null; spawnEnemy(9, 18);
   dirty = {x0:0,y0:0,x1:MS-1,y1:MS-1};
   uploadWorldDirty();
 }
@@ -822,6 +907,12 @@ if(typeof TEX !== 'undefined'){
   gl.uniform1i(U.uHasTex, 0);
 }
 
+// ===== TEKSTURA SHREKA (rysowana proceduralnie) =====
+const spriteTex = loadSpriteTexture(5);
+gl.uniform1i(U.uSprite, 5);
+gl.uniform2f(U.uEnemySize, 0.30, 0.95);
+gl.uniform1f(U.uHasEnemy, 0.0);
+
 // ===== GRACZ =====
 let pX=spawn.x, pY=spawn.y, ang=Math.random()*6.28, pitch=0, bobT=0;
 let paused=false, frozenT=0;
@@ -889,6 +980,96 @@ function movePlayer(dx,dy){
   pY = Math.min(MS-2, Math.max(1, pY));
 }
 
+// ===== SHREK (sprite 3D + pościg) =====
+let enemy = null;            // {x, y}
+let caught = false;
+const caughtEl = document.getElementById('caught');
+
+// rysujemy Shreka proceduralnie (przezroczyste tło, widok z przodu)
+function makeShrekSprite(){
+  const c = document.createElement('canvas'); c.width = 256; c.height = 512;
+  const g = c.getContext('2d');
+  const E = (x,y,rx,ry,col)=>{ g.fillStyle=col; g.beginPath(); g.ellipse(x,y,rx,ry,0,0,Math.PI*2); g.fill(); };
+  const SKIN='#7fae4b', SKIN_D='#6d9a3f', VEST='#6b4a24', VEST_D='#553a1c', WHITE='#f2f0e6';
+  // nogi (brązowe spodnie)
+  g.fillStyle='#4a3418'; g.fillRect(84,360,36,150); g.fillRect(136,360,36,150);
+  // buty
+  g.fillStyle='#2b1f10'; g.fillRect(76,486,52,26); g.fillRect(128,486,52,26);
+  // tułów (zielony) + kamizelka
+  g.fillStyle=SKIN; g.beginPath(); g.ellipse(128,300,74,104,0,0,Math.PI*2); g.fill();
+  g.fillStyle=VEST; g.beginPath(); g.ellipse(128,300,62,96,0,0,Math.PI*2); g.fill();
+  g.fillStyle=VEST_D; g.fillRect(122,214,12,180);
+  // ramiona
+  g.fillStyle=SKIN_D; g.beginPath(); g.ellipse(52,290,26,84,0.18,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(204,290,26,84,-0.18,0,Math.PI*2); g.fill();
+  // uszy (trąbki)
+  E(60,150,20,15,SKIN_D); E(196,150,20,15,SKIN_D);
+  // głowa
+  E(128,168,74,80,SKIN);
+  E(128,196,66,54,SKIN);       // policzki
+  // brwi
+  g.strokeStyle='#3a2a12'; g.lineWidth=9; g.lineCap='round';
+  g.beginPath(); g.moveTo(88,132); g.lineTo(118,138); g.moveTo(168,132); g.lineTo(138,138); g.stroke();
+  // oczy
+  E(104,158,17,20,WHITE); E(152,158,17,20,WHITE);
+  E(104,160,8,10,'#1b1408'); E(152,160,8,10,'#1b1408');
+  // nos
+  E(128,188,12,9,SKIN_D);
+  // usta
+  g.fillStyle='#3a1f14'; g.beginPath(); g.ellipse(128,216,36,14,0,0,Math.PI*2); g.fill();
+  g.fillStyle='#c9b18c'; g.fillRect(96,208,64,6);
+  return c;
+}
+
+function loadSpriteTexture(unit){
+  const cv2 = makeShrekSprite();
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0+unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,cv2);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  return t;
+}
+
+// znajduje wolne pole w podanej odległości od gracza i tam stawia Shreka
+function spawnEnemy(minD, maxD){
+  for(let tries=0; tries<400; tries++){
+    const a = Math.random()*Math.PI*2;
+    const d = minD + Math.random()*(maxD-minD);
+    const x = pX + Math.cos(a)*d, y = pY + Math.sin(a)*d;
+    if(x<2||y<2||x>=MS-2||y>=MS-2) continue;
+    if(at(x|0,y|0)===0 && at((x|0)+1,y|0)===0 && at(x|0,(y|0)+1)===0){
+      enemy = {x:x, y:y};
+      return;
+    }
+  }
+  enemy = null;
+}
+
+// ruch Shreka w stronę gracza (ślizga się po ścianach)
+function moveEnemy(dt){
+  if(!enemy) return;
+  const spd = 2.05*dt;
+  let dx = pX-enemy.x, dy = pY-enemy.y;
+  const l = Math.hypot(dx,dy) || 1;
+  dx/=l; dy/=l;
+  const R = 0.30;
+  const free = (x,y)=> at((x-R)|0,(y-R)|0)===0 && at((x+R)|0,(y-R)|0)===0 &&
+                       at((x-R)|0,(y+R)|0)===0 && at((x+R)|0,(y+R)|0)===0;
+  const steps = Math.max(1, Math.ceil(spd/0.10));
+  for(let i=0;i<steps;i++){
+    const sx = dx*spd/steps, sy = dy*spd/steps;
+    if(free(enemy.x+sx, enemy.y+sy)){ enemy.x+=sx; enemy.y+=sy; }
+    else if(free(enemy.x+sx, enemy.y)){ enemy.x+=sx; }
+    else if(free(enemy.x, enemy.y+sy)){ enemy.y+=sy; }
+    else break;
+  }
+}
+
 // ===== STAMINA =====
 let stamina = 1.0;
 let won = false;
@@ -900,6 +1081,9 @@ const STAM_REGEN = 0.20;     // /sek regeneracji
 const STAM_RECOVER = 0.25;   // 1/4 paska — próg odblokowania biegu
 const stamWrap = document.getElementById('stamWrap');
 const stamFill = document.getElementById('stamFill');
+
+// pierwszy Shrek w świecie
+spawnEnemy(9, 18);
 
 // dźwięk
 let ac=null;
@@ -958,6 +1142,16 @@ function loop(now){
   stamFill.style.width = (stamina*100).toFixed(1)+'%';
   stamWrap.classList.toggle('empty', exhausted);
 
+  // ===== SHREK: pościg i złapanie =====
+  if(!paused && !caught && !won){
+    moveEnemy(dt);
+    if(enemy){
+      const d = Math.hypot(enemy.x-pX, enemy.y-pY);
+      if(d < 0.55){ caught = true; caughtEl.style.display='flex'; }
+    }
+  }
+  if(caught || won){ /* nic — koniec gry */ }
+
   const eye = EYE + groundAt(pX,pY) + Math.sin(bobT)*0.012*(moving?1:0);
   // ===== WYGRANA: wejście na szczyt schodów =====
   {
@@ -975,6 +1169,13 @@ function loop(now){
   gl.uniform1f(U.uTime, tNow);
   gl.uniform1f(U.uPitch, -pitch*0.55);
   gl.uniform1f(U.uEye, eye);
+  // Shrek — pozycja dla shadera
+  if(enemy && !caught){
+    gl.uniform1f(U.uHasEnemy, 1.0);
+    gl.uniform3f(U.uEnemy, enemy.x, 0.0, enemy.y);
+  } else {
+    gl.uniform1f(U.uHasEnemy, 0.0);
+  }
 
   // --- przebieg 1: scena do bufora ---
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
