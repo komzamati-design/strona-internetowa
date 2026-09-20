@@ -193,7 +193,8 @@ function placeStairs(r){
     const cx2 = sx0+NSTEPS, cy2 = sy0+dz;
     map[cy2*MS+cx2]=1; heights[cy2*MS+cx2]=hTop; markDirty(cx2,cy2);
   }
-  stairsList.push({x: sx0+0.5, y: sy0+1.0, top:{x:sx0+NSTEPS+0.5, y:sy0+1.0}});
+  stairsList.push({x: sx0+0.5, y: sy0+1.0, top:{x:sx0+NSTEPS+0.5, y:sy0+1.0},
+                   x0:sx0, y0:sy0, x1:sx0+NSTEPS, y1:sy0+1});
   if(stairsList.length > 24) stairsList.shift();
   return true;
 }
@@ -214,13 +215,33 @@ function genSlot(i,j){
       const dp = Math.hypot(r.cx - playerPos.x, r.cy - playerPos.y);
       if(dp > 2.0){ map[r.cy*MS+r.cx]=1; markDirty(r.cx,r.cy); }
     }
-    // RZADKIE SCHODY (3D) — prowadzą do wygranej. ~4% pokoi.
-    if(h2(i,j,61) < 0.04) placeStairs(r);
   }
   if(r.ex){
     corridorH(r, roomOf(i+1,j));
     if(h2(i,j,53) < 0.35) corridorH(r, roomOf(i+2,j));
     corridorV(r, roomOf(i,j+1));
+  }
+}
+
+// ---- naprawa uszkodzonych schodów (żeby nigdy nie zostały resztki w ścianie) ----
+function repairStairs(){
+  for(let n=stairsList.length-1; n>=0; n--){
+    const s = stairsList[n];
+    let ok = true;
+    for(let y=s.y0; y<=s.y1 && ok; y++)
+      for(let x=s.x0; x<=s.x1 && ok; x++){
+        const k = y*MS+x;
+        if(map[k]!==1 || heights[k]<=0) ok = false;
+      }
+    if(!ok){
+      // wyczyść resztki i usuń wpis
+      for(let y=s.y0; y<=s.y1; y++)
+        for(let x=s.x0; x<=s.x1; x++){
+          const k = y*MS+x;
+          if(map[k]===1 && heights[k]>0){ map[k]=0; heights[k]=0; markDirty(x,y); }
+        }
+      stairsList.splice(n,1);
+    }
   }
 }
 
@@ -235,6 +256,13 @@ function ensureWorld(px,py){
   lastSlotKey = key;
   const R = VIEW_AHEAD;
   for(let j=cj-R;j<=cj+R;j++) for(let i=ci-R;i<=ci+R;i++) genSlot(i,j);
+  // SCHODY stawiamy DOPIERO TERAZ — po wszystkich korytarzach w tym obszarze,
+  // żeby żadne późniejsze cięcie nie uszkodziło schodów (i nie zostały w ścianie)
+  const RS = R-2;
+  for(let j=cj-RS;j<=cj+RS;j++) for(let i=ci-RS;i<=ci+RS;i++){
+    if(h2(i,j,61) < 0.05) placeStairs(roomOf(i,j));
+  }
+  repairStairs();
   // po generacji wysyłamy CAŁY wygenerowany obszar do tekstury —
   // dzięki temu obraz i kolizje nigdy się nie rozjadą
   const gx0 = Math.max(0, (ci-R)*SLOT-2), gx1 = Math.min(MS-1, (ci+R+1)*SLOT+2);
