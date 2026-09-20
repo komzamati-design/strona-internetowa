@@ -93,8 +93,8 @@ setInterval(()=>{
 const MS = 2048;                      // bufor świata (komórek) wokół gracza
 const SLOT = 9;                       // siatka "slotów" pokoi
 const HMAX = 0.80;                    // maksymalna wysokość bloku (jak w shaderze)
-const STEP_H = 0.13;                  // wysokość jednego stopnia
-const NSTEPS = 5;                     // liczba stopni (razem 0.65)
+const STEP_H = 0.16;                  // wysokość jednego stopnia
+const NSTEPS = 4;                     // liczba stopni (razem 0.64)
 const TOP_H  = STEP_H*NSTEPS;         // wysokość szczytu schodów = wygrana
 const hByte  = h => Math.max(0, Math.min(255, Math.round(h/HMAX*255)));
 let map = new Uint8Array(MS*MS).fill(1);
@@ -628,8 +628,8 @@ void main(){
     }
     vec2 fr = abs(fract(P.xz)-0.5);
     float edge = smoothstep(0.40,0.5, max(fr.x,fr.y));
-    albedo = mix(base, vec3(0.62,0.47,0.20), 0.55) * (0.80 + 0.20*(1.0-edge));
-    glow = vec3(0.34,0.23,0.06)*(1.0-edge);       // poświata — widać z daleka
+    albedo = mix(base, vec3(0.70,0.53,0.22), 0.55) * (0.82 + 0.18*(1.0-edge));
+    glow = vec3(0.42,0.29,0.08)*(1.0-edge);       // poświata — widać z daleka
     N = vec3(0.,1.,0.);
   }
   else if(kind==4){
