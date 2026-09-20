@@ -89,22 +89,25 @@ setInterval(()=>{
   tsEl.textContent = p(Math.floor(s/3600))+':'+p(Math.floor(s/60)%60)+':'+p(s%60);
 }, 500);
 
-// ===== ŚWIAT: NIESKOŃCZONA GENERACJA (1=ściana, 0=pusto) =====
-const MS = 2048;                      // bufor świata (komórek) wokół gracza
-const SLOT = 9;                       // siatka "slotów" pokoi
+// ===== ŚWIAT: STAŁA, GOTOWA MAPA (bez generowania w trakcie gry) =====
+// Cała mapa powstaje raz na starcie, jest wysyłana do GPU w jednym kawałku
+// i się nie zmienia — dzięki temu obraz i kolizje są zawsze identyczne.
+const MS = 320;                       // rozmiar mapy w komórkach (~640 m)
+const SLOT = 9;                       // siatka pokoi
 const HMAX = 0.80;                    // maksymalna wysokość bloku (jak w shaderze)
 const STEP_H = 0.16;                  // wysokość jednego stopnia
 const NSTEPS = 4;                     // liczba stopni (razem 0.64)
 const TOP_H  = STEP_H*NSTEPS;         // wysokość szczytu schodów = wygrana
+const BORDER = 4;                     // gruby mur dookoła mapy
 const hByte  = h => Math.max(0, Math.min(255, Math.round(h/HMAX*255)));
 let map = new Uint8Array(MS*MS).fill(1);
 let heights = new Uint8Array(MS*MS);  // 0 = brak bloku, >0 = wysokość (bajt)
 const at = (x,y)=> (x<0||y<0||x>=MS||y>=MS) ? 1 : map[y*MS+x];
 
-// LOSOWY SEED — za każdą grą inny układ (a w obrębie gry spójny)
-let SEED = (Math.random()*0x7fffffff)|0;
+// stały seed — mapa jest "już zrobiona" (R losuje nową, ale też od razu całą)
+let SEED = 1337;
 
-// deterministyczny hash dla danego slotu (świat zawsze taki sam dla danego seeda)
+// deterministyczny hash dla danego slotu
 function h2(i,j,s){
   let h = Math.imul(i|0, 374761393) + Math.imul(j|0, 668265263)
         + Math.imul(s|0, 1442695041) + Math.imul(SEED, 2246822519);
@@ -123,14 +126,14 @@ function roomOf(i,j){
 // pozycja gracza — potrzebna generatorowi, żeby nie stawiał ścian na graczu
 const playerPos = {x: MS/2, y: MS/2};
 
-// prostokąt "brudny" do podmiany fragmentu tekstury
+// prostokąt "brudny" (używany tylko do jednorazowego wysłania całej mapy)
 let dirty = null;
 function markDirty(x,y){
   if(!dirty) dirty = {x0:x,y0:y,x1:x,y1:y};
   else { if(x<dirty.x0)dirty.x0=x; if(y<dirty.y0)dirty.y0=y; if(x>dirty.x1)dirty.x1=x; if(y>dirty.y1)dirty.y1=y; }
 }
 function carve(x,y){
-  if(x<1||y<1||x>=MS-1||y>=MS-1) return;
+  if(x<BORDER||y<BORDER||x>=MS-BORDER||y>=MS-BORDER) return;   // mur dookoła zostaje
   const i=y*MS+x;
   if(map[i]===0 && heights[i]===0) return;
   map[i]=0; heights[i]=0;      // czyścimy też wysokość (inaczej zostają "niewidzialne" bloki)
@@ -245,60 +248,54 @@ function repairStairs(){
   }
 }
 
-// generuje sloty wokół gracza DUŻO wcześniej niż gracz dojdzie —
-// dzięki temu żadna widoczna ściana nie znika mu przed nosem
-const VIEW_AHEAD = 16;                // slotów w każdą stronę (~144 komórki > zasięg wzroku 128)
-let lastSlotKey = '';
-function ensureWorld(px,py){
-  const ci = Math.floor(px/SLOT), cj = Math.floor(py/SLOT);
-  const key = ci+'_'+cj;
-  if(key === lastSlotKey) return false;
-  lastSlotKey = key;
-  const R = VIEW_AHEAD;
-  for(let j=cj-R;j<=cj+R;j++) for(let i=ci-R;i<=ci+R;i++) genSlot(i,j);
-  // SCHODY stawiamy DOPIERO TERAZ — po wszystkich korytarzach w tym obszarze,
-  // żeby żadne późniejsze cięcie nie uszkodziło schodów (i nie zostały w ścianie)
-  const RS = R-2;
-  for(let j=cj-RS;j<=cj+RS;j++) for(let i=ci-RS;i<=ci+RS;i++){
-    if(h2(i,j,61) < 0.05) placeStairs(roomOf(i,j));
+// ===== BUDOWA CAŁEJ MAPY RAZ (na starcie) =====
+function buildWorld(){
+  map.fill(1);
+  heights.fill(0);
+  madeSlots.clear();
+  stairsList.length = 0;
+
+  const N = Math.floor((MS-BORDER*2)/SLOT);
+  // 1) wszystkie pokoje + korytarze
+  for(let j=0;j<N;j++) for(let i=0;i<N;i++) genSlot(i,j);
+  // 2) schody — dopiero po wszystkich korytarzach, tylko w pokojach
+  const cand = [];
+  for(let j=0;j<N;j++) for(let i=0;i<N;i++) cand.push([i,j]);
+  cand.sort((a,b)=> h2(a[0],a[1],71) - h2(b[0],b[1],71));
+  let placed = 0;
+  for(const c of cand){
+    if(placed >= 14) break;
+    const r = roomOf(c[0],c[1]);
+    if(!r.ex) continue;
+    let tooClose = false;
+    for(const s of stairsList){ if(Math.hypot(s.x-r.cx, s.y-r.cy) < 22){ tooClose = true; break; } }
+    if(tooClose) continue;
+    if(placeStairs(r)) placed++;
+  }
+  if(placed < 6){
+    for(const c of cand){ if(placed >= 6) break; if(placeStairs(roomOf(c[0],c[1]))) placed++; }
   }
   repairStairs();
-  // po generacji wysyłamy CAŁY wygenerowany obszar do tekstury —
-  // dzięki temu obraz i kolizje nigdy się nie rozjadą
-  const gx0 = Math.max(0, (ci-R)*SLOT-2), gx1 = Math.min(MS-1, (ci+R+1)*SLOT+2);
-  const gy0 = Math.max(0, (cj-R)*SLOT-2), gy1 = Math.min(MS-1, (cj+R+1)*SLOT+2);
-  dirty = {x0:gx0, y0:gy0, x1:gx1, y1:gy1};
-  // Gwarancja: jeśli w pobliżu nie ma żadnych schodów, postaw jedne w okolicy
-  let near = false;
-  for(const s of stairsList){ if(Math.hypot(s.x-px, s.y-py) < 70){ near = true; break; } }
-  if(!near){
-    let placed = false;
-    for(let rr=2; rr<=8 && !placed; rr++){
-      for(let j=cj-rr;j<=cj+rr && !placed;j++){
-        for(let i=ci-rr;i<=ci+rr && !placed;i++){
-          if(Math.max(Math.abs(i-ci),Math.abs(j-cj)) !== rr) continue;
-          if(placeStairs(roomOf(i,j))) placed = true;
-        }
-      }
-    }
-  }
-  return true;
+  dirty = {x0:0, y0:0, x1:MS-1, y1:MS-1};
 }
 
-// start gracza: wolne pole w okolicy środka
+// pozycja startowa gracza: wolne pole blisko środka mapy
 let spawn = {x:MS/2+0.5, y:MS/2+0.5};
-{
-  const ci = Math.floor(spawn.x/SLOT), cj = Math.floor(spawn.y/SLOT);
-  for(let j=cj-VIEW_AHEAD;j<=cj+VIEW_AHEAD;j++) for(let i=ci-VIEW_AHEAD;i<=ci+VIEW_AHEAD;i++) genSlot(i,j);
-  let best=null, bd=1e9;
-  for(let y=cj*SLOT-8;y<cj*SLOT+8;y++) for(let x=ci*SLOT-8;x<ci*SLOT+8;x++){
-    if(at(x,y)===0 && at(x+1,y)===0 && at(x,y+1)===0){
-      const d=(x-spawn.x)*(x-spawn.x)+(y-spawn.y)*(y-spawn.y);
+function findSpawn(){
+  const cx = Math.floor(MS/2), cy = Math.floor(MS/2);
+  let best = null, bd = 1e9;
+  for(let y=cy-40;y<=cy+40;y++) for(let x=cx-40;x<=cx+40;x++){
+    if(x<BORDER||y<BORDER||x>=MS-BORDER||y>=MS-BORDER) continue;
+    if(at(x,y)===0 && at(x+1,y)===0 && at(x,y+1)===0 && at(x-1,y)===0 && at(x,y-1)===0){
+      const d=(x+0.5-Math.floor(MS/2))*(x+0.5-Math.floor(MS/2))+(y+0.5-Math.floor(MS/2))*(y+0.5-Math.floor(MS/2));
       if(d<bd){ bd=d; best={x:x+0.5,y:y+0.5}; }
     }
   }
   if(best) spawn = best;
 }
+buildWorld();
+findSpawn();
+
 // "solid" = pełna ściana (blok o wysokości można pokonać wchodząc po stopniach)
 const solid = (x,y)=>{
   const cx = x|0, cy = y|0;
@@ -334,7 +331,7 @@ uniform float uTime, uPitch, uEye, uStairShow;
 uniform vec2 uStairDir;
 const float TANH = 0.57735;   // FOV 60°
 const float WC = 1.35;        // wysokość sufitu
-const float MS = 2048.0;      // rozmiar bufora świata (musi się zgadzać z JS)
+const float MS = 320.0;       // rozmiar mapy (musi się zgadzać z JS)
 const float HMAX = 0.80;      // maksymalna wysokość bloku (schodów)
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
@@ -856,25 +853,13 @@ function uploadWorldDirty(){
 }
 uploadWorldDirty();
 
-// nowy losowy świat (klawisz R): czyści mapę i generuje od nowa wokół gracza
+// nowa mapa (klawisz R): buduje CAŁĄ mapę od nowa z innym seedem
 function reseedWorld(){
   SEED = (Math.random()*0x7fffffff)|0;
-  map.fill(1);
-  heights.fill(0);
-  stairsList.length = 0;
-  madeSlots.clear();
-  lastSlotKey = '';
+  buildWorld();                       // cała mapa + schody (zwalidowane)
+  findSpawn();
+  pX = spawn.x; pY = spawn.y;
   won = false; winEl.style.display='none';
-  const ci = Math.floor(pX/SLOT), cj = Math.floor(pY/SLOT);
-  for(let j=cj-VIEW_AHEAD;j<=cj+VIEW_AHEAD;j++) for(let i=ci-VIEW_AHEAD;i<=ci+VIEW_AHEAD;i++) genSlot(i,j);
-  let best=null, bd=1e9;
-  for(let y=cj*SLOT-9;y<cj*SLOT+9;y++) for(let x=ci*SLOT-9;x<ci*SLOT+9;x++){
-    if(at(x,y)===0 && at(x+1,y)===0 && at(x,y+1)===0){
-      const d=(x+0.5-pX)*(x+0.5-pX)+(y+0.5-pY)*(y+0.5-pY);
-      if(d<bd){ bd=d; best={x:x+0.5,y:y+0.5}; }
-    }
-  }
-  if(best){ pX=best.x; pY=best.y; }
   caught = false; caughtEl.style.display='none';
   enemy = null; spawnEnemy(9, 18);
   dirty = {x0:0,y0:0,x1:MS-1,y1:MS-1};
@@ -1019,8 +1004,8 @@ function movePlayer(dx,dy){
   }
   // zabezpieczenie: nigdy nie kończymy wewnątrz ściany
   if(!canStand(pX,pY)){ pX = ox; pY = oy; }
-  pX = Math.min(MS-2, Math.max(1, pX));
-  pY = Math.min(MS-2, Math.max(1, pY));
+  pX = Math.min(MS-BORDER-1, Math.max(BORDER+1, pX));
+  pY = Math.min(MS-BORDER-1, Math.max(BORDER+1, pY));
 }
 
 // ===== SHREK (sprite 3D + pościg) =====
@@ -1241,7 +1226,7 @@ function loop(now){
   }
   const tNow = paused ? frozenT : now/1000;
   // --- świat: generowanie kolejnych fragmentów wokół gracza ---
-  if(!paused && ensureWorld(pX,pY)) uploadWorldDirty();
+  // świat jest stały — tekstura wysłana raz na starcie (nic nie trzeba dogrywać)
   gl.useProgram(prog);                            // uniformy scenerii
   gl.uniform2f(U.uRes, cv.width, cv.height);
   gl.uniform2f(U.uPos, pX, pY);
